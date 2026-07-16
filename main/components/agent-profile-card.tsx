@@ -1,13 +1,8 @@
-"use client";
-
-import { useState } from "react";
 import Image from "next/image";
-import { Copy, Check } from "lucide-react";
 
 type AgentProfileCardProps = {
   name: string;
   description: string;
-  address: string;
   tags: string[];
 };
 
@@ -26,17 +21,7 @@ const markdownToHtml = (markdown: string) => {
   return withBold.replace(/\n/g, "<br />");
 };
 
-const formatAddress = (address: string) => `${address.slice(0, 6)}...${address.slice(-4)}`;
-
-export function AgentProfileCard({ name, description, address, tags }: AgentProfileCardProps) {
-  const [copied, setCopied] = useState(false);
-
-  const copyAddress = async () => {
-    await navigator.clipboard.writeText(address);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
-
+export function AgentProfileCard({ name, description, tags }: AgentProfileCardProps) {
   return (
     <div className="max-w-2xl mx-auto">
       <div className="bg-card border border-border rounded-xl p-6 shadow-sm">
@@ -54,21 +39,6 @@ export function AgentProfileCard({ name, description, address, tags }: AgentProf
           {/* Info */}
           <div className="flex-1 text-center sm:text-left space-y-2">
             <h2 className="text-2xl font-bold text-foreground">{name}</h2>
-            <div className="flex items-center justify-center sm:justify-start gap-2 text-sm text-muted-foreground">
-              <span>Address:</span>
-              <button
-                onClick={copyAddress}
-                className="inline-flex items-center gap-1.5 font-mono bg-muted px-2 py-1 rounded hover:bg-muted/80 transition-colors cursor-pointer"
-                title={address}
-              >
-                {formatAddress(address)}
-                {copied ? (
-                  <Check className="h-3.5 w-3.5 text-green-500" />
-                ) : (
-                  <Copy className="h-3.5 w-3.5" />
-                )}
-              </button>
-            </div>
             <p
               className="text-muted-foreground"
               dangerouslySetInnerHTML={{ __html: markdownToHtml(description) }}

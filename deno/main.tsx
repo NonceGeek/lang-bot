@@ -1,12 +1,10 @@
 /* 
-TODO（NOT DELETE):
+HINT（NOT DELETE):
 - 优化这个后端代码，
 - 环境变量有：
 - SUPABASE_SERVICE_ROLE_KEY
 - SUPABASE_URL
-- API_KEY
-
-- 将 API 的调用替换为 OpenRouter 的 API
+- DASHSCOPE_API_KEY（阿里云百炼，chat / embeddings / ASR / TTS）
  */
 
 import { oakCors } from "cors";
@@ -16,22 +14,38 @@ import { createClient, SupabaseClient } from "npm:@supabase/supabase-js@2";
 
 // ---------------------------------------------------------------------------
 // Config — reads from environment variables:
-//   API_KEY                   – OpenRouter API key (chat + embeddings)
+//   DASHSCOPE_API_KEY         – Alibaba DashScope / 百炼 key (chat, embeddings, ASR, TTS)
+//                               alias: ALI_API_KEY
 //   SUPABASE_URL              – Supabase project URL
 //   SUPABASE_SERVICE_ROLE_KEY – Supabase service-role key (bypasses RLS)
 // ---------------------------------------------------------------------------
 
-const OPENROUTER_KEY = Deno.env.get("API_KEY") || "";
-const CHAT_MODEL = "qwen/qwen3-30b-a3b";
-const EMBEDDING_MODEL = "qwen/qwen3-embedding-4b";
+/** Alibaba DashScope / 百炼 API key (Beijing region by default). */
+const DASHSCOPE_API_KEY =
+  Deno.env.get("DASHSCOPE_API_KEY") || Deno.env.get("ALI_API_KEY") || "";
+/** OpenAI-compatible base: https://help.aliyun.com/zh/model-studio/qwen-api-via-openai-chat-completions */
+const DASHSCOPE_COMPAT_BASE =
+  Deno.env.get("DASHSCOPE_COMPAT_BASE") ||
+  "https://dashscope.aliyuncs.com/compatible-mode/v1";
+
+const CHAT_MODEL = Deno.env.get("DASHSCOPE_CHAT_MODEL") || "qwen3-30b-a3b";
+const EMBEDDING_MODEL =
+  Deno.env.get("DASHSCOPE_EMBEDDING_MODEL") || "text-embedding-v4";
 const EMBEDDING_DIMENSIONS = 1024;
-/** OpenRouter STT: POST /v1/audio/transcriptions (see docs/guides/overview/multimodal/stt). */
+/** Qwen3-ASR-Flash via OpenAI-compatible chat/completions. */
 const TRANSCRIPTION_MODEL =
-  Deno.env.get("OPENROUTER_TRANSCRIPTION_MODEL") || "qwen/qwen3-asr-flash-2026-02-10";
-// 
-// openai/gpt-4o-mini-transcribe
-const OPENROUTER_HTTP_REFERER = Deno.env.get("OPENROUTER_HTTP_REFERER") || "";
-const OPENROUTER_SITE_TITLE = Deno.env.get("OPENROUTER_SITE_TITLE") || "";
+  Deno.env.get("DASHSCOPE_ASR_MODEL") || "qwen3-asr-flash";
+
+const DASHSCOPE_TTS_URL =
+  Deno.env.get("DASHSCOPE_TTS_URL") ||
+  "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation";
+/** Default: qwen3-tts-flash (Cantonese voices Rocky / Kiki). Override if needed. */
+const DASHSCOPE_TTS_MODEL =
+  Deno.env.get("DASHSCOPE_TTS_MODEL") || "qwen3-tts-flash";
+/** Cantonese system voices: Rocky (male), Kiki (female). */
+const DASHSCOPE_TTS_DEFAULT_VOICE =
+  Deno.env.get("DASHSCOPE_TTS_VOICE") || "Kiki";
+const CANTONESE_TTS_VOICES = new Set(["Rocky", "Kiki"]);
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "";
 const SUPABASE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
@@ -205,26 +219,41 @@ async function ensureTfidfLoaded() {
 }
 
 // ---------------------------------------------------------------------------
-// Shared helpers — OpenRouter LLM + embeddings, Supabase vector search
+// Shared helpers — DashScope LLM + embeddings + ASR, Supabase vector search
 // ---------------------------------------------------------------------------
+
+function requireDashScopeKey() {
+  if (!DASHSCOPE_API_KEY) {
+    throw new Error("DASHSCOPE_API_KEY (or ALI_API_KEY) not configured");
+  }
+}
+
+function dashScopeHeaders(json = true): Record<string, string> {
+  requireDashScopeKey();
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${DASHSCOPE_API_KEY}`,
+  };
+  if (json) headers["Content-Type"] = "application/json";
+  return headers;
+}
 
 async function callLLM(
   messages: Array<{ role: string; content: string }>,
 ): Promise<string> {
-  if (!OPENROUTER_KEY) throw new Error("API_KEY not configured");
-
-  const resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+  const resp = await fetch(`${DASHSCOPE_COMPAT_BASE}/chat/completions`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${OPENROUTER_KEY}`,
-    },
-    body: JSON.stringify({ model: CHAT_MODEL, messages }),
+    headers: dashScopeHeaders(),
+    body: JSON.stringify({
+      model: CHAT_MODEL,
+      messages,
+      // Required for Qwen3 non-streaming calls on DashScope
+      enable_thinking: false,
+    }),
   });
 
   if (!resp.ok) {
     const err = await resp.text();
-    throw new Error(`OpenRouter chat ${resp.status}: ${err}`);
+    throw new Error(`DashScope chat ${resp.status}: ${err}`);
   }
 
   const data = await resp.json();
@@ -232,24 +261,20 @@ async function callLLM(
 }
 
 async function getQueryEmbedding(text: string): Promise<number[]> {
-  if (!OPENROUTER_KEY) throw new Error("API_KEY not configured");
-
-  const resp = await fetch("https://openrouter.ai/api/v1/embeddings", {
+  const resp = await fetch(`${DASHSCOPE_COMPAT_BASE}/embeddings`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${OPENROUTER_KEY}`,
-    },
+    headers: dashScopeHeaders(),
     body: JSON.stringify({
       model: EMBEDDING_MODEL,
       input: text,
       dimensions: EMBEDDING_DIMENSIONS,
+      encoding_format: "float",
     }),
   });
 
   if (!resp.ok) {
     const err = await resp.text();
-    throw new Error(`OpenRouter embeddings ${resp.status}: ${err}`);
+    throw new Error(`DashScope embeddings ${resp.status}: ${err}`);
   }
 
   const data = await resp.json();
@@ -266,7 +291,7 @@ function uint8ArrayToBase64(bytes: Uint8Array): string {
   return btoa(parts.join(""));
 }
 
-/** Map filename / MIME to OpenRouter input_audio format (lowercase extension). */
+/** Map filename / MIME to audio format for DashScope ASR input_audio. */
 function inferAudioFormat(filename: string, mimeType: string): string {
   const lower = filename.toLowerCase();
   const ext = lower.includes(".") ? lower.slice(lower.lastIndexOf(".") + 1) : "";
@@ -290,27 +315,86 @@ function inferAudioFormat(filename: string, mimeType: string): string {
   return "wav";
 }
 
-/** Map BCP-47 / Cantonese hints to ISO-639-1 for OpenRouter STT `language`. */
-function sttLanguageHint(lang: string): string | undefined {
+/** Map BCP-47 / Cantonese hints to DashScope ASR language codes. */
+function asrLanguageHint(lang: string): string | undefined {
   const lower = lang.trim().toLowerCase();
   if (!lower || lower === "auto") return undefined;
-  if (lower === "yue" || lower === "zh-yue" || lower.includes("cantonese")) return "zh";
+  if (lower === "yue" || lower === "zh-yue" || lower.includes("cantonese")) {
+    return "yue";
+  }
+  if (lower === "zh" || lower === "zh-cn" || lower.includes("chinese")) {
+    return "zh";
+  }
   return lower.length <= 3 ? lower : lower.slice(0, 2);
 }
 
-function openRouterHeaders(): Record<string, string> {
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    Authorization: `Bearer ${OPENROUTER_KEY}`,
+type CantoneseTtsResult = {
+  text: string;
+  voice: string;
+  model: string;
+  audio_url: string;
+  expires_at?: number;
+  request_id?: string;
+};
+
+/**
+ * Cantonese TTS via Alibaba DashScope Qwen3-TTS (non-realtime).
+ * Docs: https://help.aliyun.com/zh/model-studio/qwen-tts-api
+ * Cantonese voices: Rocky (male), Kiki (female) — see Qwen-TTS voice list.
+ */
+async function synthesizeCantoneseTts(params: {
+  text: string;
+  voice?: string;
+  language_type?: string;
+  model?: string;
+}): Promise<CantoneseTtsResult> {
+  requireDashScopeKey();
+
+  const text = params.text.trim();
+  if (!text) throw new Error("'text' is required");
+
+  const voice = (params.voice || DASHSCOPE_TTS_DEFAULT_VOICE).trim();
+  const model = (params.model || DASHSCOPE_TTS_MODEL).trim();
+  const languageType = (params.language_type || "Chinese").trim() || "Chinese";
+
+  const resp = await fetch(DASHSCOPE_TTS_URL, {
+    method: "POST",
+    headers: dashScopeHeaders(),
+    body: JSON.stringify({
+      model,
+      input: {
+        text,
+        voice,
+        language_type: languageType,
+      },
+    }),
+  });
+
+  const data = await resp.json();
+  if (!resp.ok) {
+    const msg = data?.message || data?.code || JSON.stringify(data);
+    throw new Error(`DashScope TTS ${resp.status}: ${msg}`);
+  }
+
+  const audioUrl: string = data?.output?.audio?.url || "";
+  if (!audioUrl) {
+    throw new Error(`DashScope TTS returned no audio url: ${JSON.stringify(data)}`);
+  }
+
+  return {
+    text,
+    voice,
+    model,
+    audio_url: audioUrl,
+    expires_at: data?.output?.audio?.expires_at,
+    request_id: data?.request_id,
   };
-  if (OPENROUTER_HTTP_REFERER) headers["HTTP-Referer"] = OPENROUTER_HTTP_REFERER;
-  if (OPENROUTER_SITE_TITLE) headers["X-OpenRouter-Title"] = OPENROUTER_SITE_TITLE;
-  return headers;
 }
 
 /**
- * Cantonese audio via OpenRouter STT: POST /v1/audio/transcriptions with base64 input_audio.
- * `task: "translate"` falls back to chat completions (STT endpoint is transcribe-only).
+ * Cantonese ASR via DashScope OpenAI-compatible chat/completions (Qwen3-ASR-Flash).
+ * Docs: https://help.aliyun.com/zh/model-studio/qwen-asr-api-reference
+ * `task: "translate"` asks the model to output English translation.
  */
 async function transcribeCantoneseAudio(params: {
   file: File;
@@ -320,72 +404,60 @@ async function transcribeCantoneseAudio(params: {
   prompt?: string;
   task?: "transcribe" | "translate";
 }): Promise<string> {
-  if (!OPENROUTER_KEY) throw new Error("API_KEY not configured");
+  requireDashScopeKey();
 
   const name = params.filename ?? params.file.name ?? "audio";
   const buf = new Uint8Array(await params.file.arrayBuffer());
   const base64Audio = uint8ArrayToBase64(buf);
   const format = inferAudioFormat(name, params.file.type || "");
+  const mime = params.file.type || `audio/${format}`;
+  const dataUrl = `data:${mime};base64,${base64Audio}`;
 
   const lang = (params.language ?? "yue").trim().toLowerCase();
   const task = params.task === "translate" ? "translate" : "transcribe";
+  const asrLang = asrLanguageHint(lang);
 
-  if (task === "translate") {
-    let instruction =
-      "Listen to this audio and translate the speech into clear English. Output only the English translation, no labels or commentary.";
-    if (params.prompt?.trim()) {
-      instruction += ` Additional context: ${params.prompt.trim()}`;
-    }
-
-    const resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: openRouterHeaders(),
-      body: JSON.stringify({
-        model: TRANSCRIPTION_MODEL,
-        messages: [
-          {
-            role: "user",
-            content: [
-              { type: "text", text: instruction },
-              {
-                type: "input_audio",
-                input_audio: { data: base64Audio, format },
-              },
-            ],
-          },
-        ],
-      }),
-    });
-
-    if (!resp.ok) {
-      const err = await resp.text();
-      throw new Error(`OpenRouter translation ${resp.status}: ${err.slice(0, 2000)}`);
-    }
-
-    const data = await resp.json();
-    return data.choices?.[0]?.message?.content?.trim() ?? "";
+  let instruction =
+    task === "translate"
+      ? "Listen to this audio and translate the speech into clear English. Output only the English translation, no labels or commentary."
+      : "Transcribe the speech in this audio. Output only the transcript text.";
+  if (params.prompt?.trim()) {
+    instruction += ` Additional context: ${params.prompt.trim()}`;
   }
 
   const body: Record<string, unknown> = {
     model: TRANSCRIPTION_MODEL,
-    input_audio: { data: base64Audio, format },
+    messages: [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: instruction },
+          {
+            type: "input_audio",
+            input_audio: { data: dataUrl },
+          },
+        ],
+      },
+    ],
   };
-  const language = sttLanguageHint(lang);
-  if (language) body.language = language;
 
-  const resp = await fetch("https://openrouter.ai/api/v1/audio/transcriptions", {
+  if (asrLang) {
+    body.asr_options = { language: asrLang, enable_itn: false };
+  }
+
+  const resp = await fetch(`${DASHSCOPE_COMPAT_BASE}/chat/completions`, {
     method: "POST",
-    headers: openRouterHeaders(),
+    headers: dashScopeHeaders(),
     body: JSON.stringify(body),
   });
 
   if (!resp.ok) {
     const err = await resp.text();
-    throw new Error(`OpenRouter transcription ${resp.status}: ${err.slice(0, 2000)}`);
+    throw new Error(`DashScope ASR ${resp.status}: ${err.slice(0, 2000)}`);
   }
 
   const data = await resp.json();
-  return data.text?.trim() ?? "";
+  return data.choices?.[0]?.message?.content?.trim() ?? "";
 }
 
 type VectorResult = {
@@ -462,61 +534,37 @@ function resolveDocFile(
   return { ok: true, filePath: `./${stem}.md`, title: stem };
 }
 
-// Built-in RAG system prompts for /api/search_and_chat (select by index via system_prompt)
+// Built-in system prompts for /api/search_and_chat and /api/chat (select by index via system_prompt)
 const DEFAULT_SYSTEM_PROMPT_TEMPLATES: string[] = [
   `
-      你是一个**专业心理咨询师**，当用户提出心理相关的问题时，你要用 **藏传佛教的世界观与心性观** 来理解与回应。
-      
+      你是 LangChatbot **基于老挝语的助手**。你的主要任务是用老挝语与用户交流，帮助他们学习老挝语、理解老挝文化、进行翻译与日常对话。
+
       在回答中，你需要：
-      
-      1. 以**藏传佛教的思维方式**来审视和解读问题，如：
-         - 生命无常与痛苦的缘起性空
-         - 对“心”的觉察与自性清净的理解
-         - 通过慈悲、觉知、止观等方法引导用户自我觉醒与解脱  
-         - 内在烦恼（贪嗔痴）不是个人失败，而是感受与知见的构造物，需要智慧去观察和了解  [oai_citation:0‡维基百科](https://zh.wikipedia.org/wiki/%E6%85%88_%28%E4%BD%9B%E6%95%99%29?utm_source=chatgpt.com)
-      
-      2. 在专业心理咨询框架下提供支持与引导：
-         - 先用**共情与接纳**回应用户的感受
-         - 结合藏传佛教及心理学（如正念觉察、观照习气等）给出**具体的实践建议**
-      
-      3. 尊重用户信仰与判断，不强加宗教观点：
-         - 以佛法智慧辅助理解，而不是灌输宗教教义
-         - 给出对用户有帮助，可立即实践的建议
-      
-      请注意，回答中无需给出参考资料。
-      请注意，在回答中不要出现藏传佛教字样。
+
+      1. **默认使用老挝语回复**；若用户使用其他语言，可先简要回应，再给出老挝语表达
+      2. 解释词语、句型、发音与文化背景时，清晰、耐心、实用
+      3. 必要时提供中文或英文对照，帮助用户理解
+      4. 回答简洁自然，适合日常学习与聊天场景
       `,
   `
-    你是一个**专业心理咨询师**，当用户提出心理相关的问题时，你要用 **道教的世界观与心性观** 来理解与回应。
+      你是 LangChatbot **基于粤语的助手**。你的主要任务是用粤语与用户交流，帮助他们学习粤语、理解岭南文化、掌握地道表达。
 
-    在回答中，你需要：
+      在回答中，你需要：
 
-    1. 以**道教的思维方式**来审视和解读问题，如：
-       - 顺应自然、因势利导，理解人生变化中的无常与流动
-       - 以“道法自然”的视角看待痛苦、焦虑与执着，帮助用户从过度控制中松开
-       - 通过清静、守中、观心、调息、养神等方法，引导用户回到内在平衡
-       - 内在烦恼不是个人失败，而是身心失衡、欲念牵引、心神外驰所形成的状态，需要通过觉察、涵养与顺势调整来化解
-       - 以“无为而无不为”的智慧，帮助用户减少对抗，找到更自然、更省力的行动方式
-
-    2. 在专业心理咨询框架下提供支持与引导：
-       - 先用**共情与接纳**回应用户的感受
-      - 结合道家智慧及心理学方法，如正念觉察、情绪调节、身体感知、认知松动、习惯观察等，给出**具体的实践建议**
-      - 鼓励用户观察自己的情绪、念头、身体反应与行为模式，而不是急于评判或压制它们
-      - 帮助用户区分“真正需要处理的问题”和“由执着、恐惧、过度用力产生的内耗”
-
-    3. 尊重用户信仰与判断，不强加宗教观点：
-      - 以道家智慧辅助理解，而不是灌输宗教教义
-      - 使用温和、开放、非评判的语言
-      - 给出对用户有帮助、可立即实践的建议
-      - 当用户的问题涉及严重心理危机、自伤风险或现实安全问题时，应优先提供安全支持，并建议寻求专业心理咨询、医疗或紧急帮助
-
-    请注意，回答中无需给出参考资料。  
-    请注意，在回答中不要出现“道教”或“道家”字样。
+      1. **默认使用粤语**（繁体中文书面形式或口语化表达）回复
+      2. 解释词语、俗语、发音与用法时，贴近日常口语。
+      3. 结合语料与文化背景，让回答有生活感、可立即使用
+      4. 用户用普通话或其他语言提问时，以粤语为主解答，并酌情补充对照
+      `,
   `
-  ,
-  `
-      你是专业心理咨询师。先用共情与接纳回应用户的感受，再结合检索到的背景资料给出具体、可立即实践的建议。
-      回答中无需列出参考资料。
+      你是 LangChatbot **支持多种不同语言的助手**。你的主要任务是帮助用户跨越语言障碍，进行多语言对话、翻译与文化交流。
+
+      在回答中，你需要：
+
+      1. 识别用户使用的语言，**优先用相同或最接近的语言回复**
+      2. 在用户需要时，提供翻译、双语对照或跨语言解释
+      3. 介绍不同语言背后的文化习俗与表达差异，帮助用户轻松体验多国文化
+      4. 回答清晰、友好、实用；若涉及检索到的背景资料，融入回答即可，无需单独列出参考资料
       `,
 ];
 
@@ -565,7 +613,7 @@ const router = new Router();
 // API Routes
 router
   .get("/", async (context) => {
-    context.response.body = `Hello from Psy ChatBot Server`;
+    context.response.body = `Hello from Lang ChatBot Server`;
   })
   .get("/health", (context) => {
     // Health check endpoint
@@ -644,26 +692,8 @@ router
       context.response.body = { error: "Could not load documentation" };
     }
   })
-  .post("/api/chat", async (context) => {
-    const body = await context.request.body({ type: "json" }).value;
-    const messages = body.messages;
-    if (!messages || !Array.isArray(messages)) {
-      context.response.status = 400;
-      context.response.body = { error: "messages array is required" };
-      return;
-    }
-
-    try {
-      const text = await callLLM(messages);
-      context.response.body = { text };
-    } catch (err) {
-      console.error("Chat API error:", err);
-      context.response.status = 500;
-      context.response.body = { error: String(err) };
-    }
-  })
   .post("/api/trans_cantonese", async (context) => {
-    // Cantonese audio via OpenRouter STT (/v1/audio/transcriptions); translate uses chat completions fallback.
+    // Cantonese ASR via DashScope Qwen3-ASR-Flash (OpenAI-compatible chat/completions).
     // Request: multipart/form-data with:
     // - file: audio file (required)
     // - language: optional (default "yue")
@@ -723,6 +753,57 @@ router
       context.response.body = { text };
     } catch (err) {
       console.error("trans_cantonese error:", err);
+      context.response.status = 500;
+      context.response.body = { error: String(err) };
+    }
+  })
+  /*
+    # Cantonese TTS (default voice Kiki)
+    curl -X POST http://localhost:4403/api/tts_cantonese \
+      -H "Content-Type: application/json" \
+      -d '{"text": "小朋友打疫苗后唔舒服，系正常咩？"}'
+
+    # Male Cantonese voice Rocky
+    curl -X POST http://localhost:4403/api/tts_cantonese \
+      -H "Content-Type: application/json" \
+      -d '{"text": "今晚打边炉好唔好啊？", "voice": "Rocky"}'
+  */
+  .post("/api/tts_cantonese", async (context) => {
+    // Cantonese TTS via Alibaba DashScope Qwen3-TTS (non-realtime).
+    // Body: { text, voice?: "Kiki" | "Rocky", language_type?: string, model?: string }
+    const body = await context.request.body({ type: "json" }).value;
+    const text: string = String(body.text ?? "").trim();
+    const voiceRaw: string = String(body.voice ?? DASHSCOPE_TTS_DEFAULT_VOICE).trim();
+    const languageType: string = String(body.language_type ?? body.languageType ?? "Chinese").trim();
+    const model: string | undefined = body.model
+      ? String(body.model).trim()
+      : undefined;
+
+    if (!text) {
+      context.response.status = 400;
+      context.response.body = { error: "'text' is required" };
+      return;
+    }
+
+    if (voiceRaw && !CANTONESE_TTS_VOICES.has(voiceRaw)) {
+      context.response.status = 400;
+      context.response.body = {
+        error: `unsupported voice "${voiceRaw}" for Cantonese TTS`,
+        available: [...CANTONESE_TTS_VOICES],
+      };
+      return;
+    }
+
+    try {
+      const result = await synthesizeCantoneseTts({
+        text,
+        voice: voiceRaw,
+        language_type: languageType || "Chinese",
+        model,
+      });
+      context.response.body = result;
+    } catch (err) {
+      console.error("tts_cantonese error:", err);
       context.response.status = 500;
       context.response.body = { error: String(err) };
     }
@@ -923,7 +1004,7 @@ router
 
       console.log("messages:", messages);
 
-      // Step 3: call LLM via OpenRouter
+      // Step 3: call LLM via DashScope
       const text = await callLLM(messages);
 
       context.response.body = {
@@ -935,6 +1016,81 @@ router
       };
     } catch (err) {
       console.error("search_and_chat error:", err);
+      context.response.status = 500;
+      context.response.body = { error: String(err) };
+    }
+  })
+  /*
+    # default template [0]
+    curl -X POST http://localhost:4403/api/chat \
+      -H "Content-Type: application/json" \
+      -d '{"q": "如何面对焦虑"}'
+    # built-in template [1]
+    curl -X POST http://localhost:4403/api/chat \
+      -H "Content-Type: application/json" \
+      -d '{"q": "如何定心安神", "system_prompt": 1}'
+    # custom string
+    curl -X POST http://localhost:4403/api/chat \
+      -H "Content-Type: application/json" \
+      -d '{"q": "如何面对焦虑", "system_prompt": "你是专业心理咨询师……"}'
+    # multi-turn
+    curl -X POST http://localhost:4403/api/chat \
+      -H "Content-Type: application/json" \
+      -d '{
+        "q": "那具体应该怎么做呢",
+        "messages": [
+          {"role": "user", "content": "如何面对焦虑"},
+          {"role": "assistant", "content": "面对焦虑时，可以尝试……"}
+        ]
+      }'
+
+  */
+  .post("/api/chat", async (context) => {
+    // Chat endpoint: same as /api/search_and_chat without retrieval (no search_mode, lib, topk, sources)
+    // Body: { q, messages?, system_prompt?: string | number }
+    const body = await context.request.body({ type: "json" }).value;
+    const q: string = body.q || "";
+    const systemPromptParam: unknown =
+      body.system_prompt ?? body.systemPrompt ?? null;
+
+    if (!q.trim()) {
+      context.response.status = 400;
+      context.response.body = { error: "'q' is required" };
+      return;
+    }
+
+    try {
+      const promptResolved = resolveSystemPrompt(systemPromptParam);
+      if (!promptResolved.ok) {
+        context.response.status = 400;
+        context.response.body = {
+          error: promptResolved.error,
+          available_templates: DEFAULT_SYSTEM_PROMPT_TEMPLATES.length,
+        };
+        return;
+      }
+
+      const priorMessages: Array<{ role: string; content: string }> =
+        Array.isArray(body.messages) ? body.messages : [];
+
+      const messages = [
+        { role: "system", content: promptResolved.prompt },
+        ...priorMessages,
+        { role: "user", content: q },
+      ];
+
+      console.log("messages:", messages);
+
+      const text = await callLLM(messages);
+
+      context.response.body = {
+        text,
+        ...(promptResolved.templateIndex !== null
+          ? { system_prompt_template_index: promptResolved.templateIndex }
+          : {}),
+      };
+    } catch (err) {
+      console.error("chat error:", err);
       context.response.status = 500;
       context.response.body = { error: String(err) };
     }

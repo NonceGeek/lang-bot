@@ -29,7 +29,7 @@ Set environment variables before starting:
 # x402 pay-to address (used by premium-content paywall)
 export MOVEMENT_PAY_TO="0xYourMovementWalletAddress"
 
-# Required for /api/chat (DashScope API key)
+# Required for chat / embeddings / ASR / TTS (Alibaba DashScope / 百炼)
 export DASHSCOPE_API_KEY="sk-your-key"
 
 # Optional server port (default: 4403)
@@ -69,7 +69,8 @@ Server default URL: `http://localhost:4403`
 
 | Method | Endpoint | Description |
 | --- | --- | --- |
-| POST | `/api/chat` | Proxies chat requests to DashScope (`qwen-plus`) |
+| POST | `/api/chat` | Chat without retrieval — same as `/api/search_and_chat` minus search (`q`, `messages`, `system_prompt`) |
+| POST | `/api/tts_cantonese` | Cantonese TTS via DashScope Qwen3-TTS (`text`, optional `voice` / `Kiki`\|`Rocky`) |
 
 Request body:
 
@@ -113,10 +114,20 @@ curl http://localhost:4403/health
 # Docs markdown
 curl http://localhost:4403/docs
 
-# Chat
+# Chat (default template [0])
 curl -X POST http://localhost:4403/api/chat \
   -H "Content-Type: application/json" \
-  -d '{"messages":[{"role":"user","content":"Write a hello-world HTML page"}]}'
+  -d '{"q": "如何面对焦虑"}'
+
+# Chat with built-in template [1]
+curl -X POST http://localhost:4403/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{"q": "如何定心安神", "system_prompt": 1}'
+
+# Chat multi-turn
+curl -X POST http://localhost:4403/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{"q": "那具体应该怎么做呢", "messages": [{"role": "user", "content": "如何面对焦虑"}, {"role": "assistant", "content": "面对焦虑时，可以尝试……"}]}'
 
 # Premium endpoint (expect 402 without payment)
 curl -i http://localhost:4403/api/premium-content

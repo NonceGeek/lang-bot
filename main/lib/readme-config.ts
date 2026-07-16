@@ -11,7 +11,6 @@ export type AppConfig = {
   twitterUrl: string;
   twitterNicename: string;
   descriptionMarkdown: string;
-  agentAddress: string;
   freeTierDescription: string;
   freeTierLink: string;
   agentTags: string[];
@@ -31,7 +30,6 @@ const REQUIRED_KEYS: Array<keyof AppConfig> = [
   "twitterUrl",
   "twitterNicename",
   "descriptionMarkdown",
-  "agentAddress",
   "freeTierDescription",
   "freeTierLink",
   "agentTags",

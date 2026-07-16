@@ -29,18 +29,18 @@ export function FreeTierCard({ description, link, chatbotName }: FreeTierCardPro
           rel="noopener noreferrer"
           className="inline-flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors font-medium"
         >
-          {chatbotName} Chatbot based on 佛教世界观
+          {chatbotName} based on Laos（老挝语）
           <ExternalLink className="h-4 w-4" />
         </a>
         <br></br>
         <br></br>
         <a
-          href="/chat/dao"
+          href="/chat/cant"
           target="_blank"
           rel="noopener noreferrer"
           className="inline-flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors font-medium"
         >
-          {chatbotName} Chatbot based on 道家世界观
+          {chatbotName} based on Cantonese（粤语）
           <ExternalLink className="h-4 w-4" />
         </a>
       </div>

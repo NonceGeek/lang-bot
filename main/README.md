@@ -10,11 +10,11 @@ A configurable Next.js scaffold for building AI Agent homepages with a built-in 
 
 * **homepageName**
   * **description:** Display name shown in the header, footer, and page title
-  * **value:** `"PsyAssistant"`
+  * **value:** `"LangChatbot"`
 
 * **fullName**
   * **description:** Full agent name shown on the profile card
-  * **value:** `"心理学助手 PsyAssistant"`
+  * **value:** `"多语种智能助理 LangChatbot"`
 
 * **twitterUrl**
   * **description:** Twitter/X profile URL shown in the footer
@@ -26,15 +26,11 @@ A configurable Next.js scaffold for building AI Agent homepages with a built-in 
 
 * **descriptionMarkdown**
   * **description:** Agent description in markdown (supports bold, links, newlines)
-  * **value:** `"A gentle, professional psychology assistant to help you untangle emotions, clarify thoughts, and make better choices.\n一个温柔、专业的心理学助手，帮你梳理情绪、理清思路、做出更好的选择。"`
-
-* **agentAddress**
-  * **description:** On-chain address displayed on the profile card.
-  * **value:** `"0x5cf8ed0e6b49da5d87ba69c4e50aa9b78c57bf0dd446f9889c8f8b5e57b0f336"`
+  * **value:** `"A multilingual smart assistant — LangChatbot helps you chat across languages and easily experience cultures from around the world.\n多语种智能助理 LangChatbot，支持多种语言对话，助你轻松体验多国文化。"`
 
 * **freeTierDescription**
   * **description:** Description text for the free tier card
-  * **value:** `"Chat with the PsyAssistant for free. \n与 PsyAssistant 免费聊天！"`
+  * **value:** `"Chat with the LangBot for free. \n与 LangBot 免费聊天！"`
 
 * **freeTierLink**
   * **description:** Link target for the free tier button
@@ -42,7 +38,7 @@ A configurable Next.js scaffold for building AI Agent homepages with a built-in 
 
 * **agentTags**
   * **description:** Array of tag labels shown on the profile card
-  * **value:** `["psychology", "emotion"]`
+  * **value:** `["language", "international"]`
 
 * **premiumTierDescription**
   * **description:** Description for the premium tier card (supports markdown with images and links)
@@ -59,7 +55,7 @@ A configurable Next.js scaffold for building AI Agent homepages with a built-in 
 * **chatApiUrl**
   * **description:** Backend API endpoint for the chat
   <!-- * **value:** `"http://localhost:8000/api/search_and_chat"` -->
-  * **value:** `"https://api.scaffold-agent-homepage.leeduckgo.com/api/search_and_chat"`
+  * **value:** `"https://api.lang-bot.aidimsum.com/api/chat"`
 
 * **chatLib**
   * **description:** TF-IDF library name used by the search_and_chat RAG endpoint

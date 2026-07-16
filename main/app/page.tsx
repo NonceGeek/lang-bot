@@ -49,7 +49,6 @@ export default function Home() {
         <AgentProfileCard
           name={config.fullName}
           description={config.descriptionMarkdown}
-          address={config.agentAddress}
           tags={config.agentTags}
         />
         <br></br>

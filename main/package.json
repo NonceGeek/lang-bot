@@ -6,7 +6,6 @@
     "twitterUrl": "https://x.com/0xleeduckgo",
     "twitterNicename": "leeduckgo@NonceGeek",
     "descriptionMarkdown": "Generate a micro pragram as a real human programmer, \n像人类工程师一样帮你生成轻量级的程序。",
-    "agentAddress": "0x5cf8ed0e6b49da5d87ba69c4e50aa9b78c57bf0dd446f9889c8f8b5e57b0f336",
     "freeTierDescription": "Chat with the LeanCoder for free. Generate the micro program automatically!\n与LeanCoder免费聊天，自动生成微程序！",
     "freeTierLink": "/chat",
     "agentTags": ["Coder", "Web3er"],

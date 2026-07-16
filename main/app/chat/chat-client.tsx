@@ -1,9 +1,16 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback, type RefObject } from "react";
 import { marked } from "marked";
 import { DeepChat } from "deep-chat-react";
 import { Header } from "@/components/header";
+import {
+  corpusItemsToSources,
+  fetchAdditionalCorpus,
+  fetchCorpusItem,
+  formatCorpusContext,
+  type CorpusItem,
+} from "@/lib/aidimsum-corpus";
 
 const DEFAULT_HISTORY_KEY = "psy_chat_history";
 const DEFAULT_TAG_CSV_URL = "/tag_content.csv";
@@ -67,8 +74,6 @@ function buildCitationHtml(content: string, sources: Source[]): string {
   );
 }
 
-type TagFormat = "single" | "dao";
-
 type ChatClientProps = {
   homepageName: string;
   chatbotDescription: string;
@@ -82,12 +87,18 @@ type ChatClientProps = {
   systemPromptEachRequest?: boolean;
   /** localStorage key; use a unique value per chat route so pages do not share history */
   historyStorageKey?: string;
-  /** Public CSV path for「随便聊聊」 */
+  /** Public CSV path for「随便聊聊」 — one question per line after header */
   tagCsvUrl?: string;
-  /** `single`: tag,content — `dao`: tag,tag_1,content */
-  tagFormat?: TagFormat;
   /** Page heading; defaults to `${homepageName} Chat` */
   chatTitle?: string;
+  /** Optional AI Dimsum base URL for extra corpus context (e.g. https://backend.aidimsum.com) */
+  additionalSourceUrl?: string;
+  /** Table name for /v2/text_search on the additional source */
+  additionalSourceTableName?: string;
+  /** When set, enables「发音」: select text → button → POST here for Cantonese TTS */
+  ttsApiUrl?: string;
+  /** Optional voice for TTS (e.g. "Kiki" female, "Rocky" male) */
+  ttsVoice?: string;
 };
 
 type ChatMessage = {
@@ -114,66 +125,55 @@ type DeepChatElement = HTMLElement & {
     method: "POST";
     headers: Record<string, string>;
   };
-  requestInterceptor?: (details: InterceptorDetails) => InterceptorDetails;
+  requestInterceptor?: (
+    details: InterceptorDetails,
+  ) => InterceptorDetails | Promise<InterceptorDetails>;
   responseInterceptor?: (response: ResponseDetails) => ResponseDetails;
   submitUserMessage?: (text: string) => void;
+  focusInput?: () => void;
   addMessage?: (message: { role?: string; text?: string; html?: string }, isUpdate?: boolean) => void;
 };
 
-const MOOD_PROMPT = "今天心情怎么样？";
-const MOOD_BUTTONS = ["非常高兴", "开心", "平淡", "难过", "崩溃"];
+// const MOOD_PROMPT = "今天心情怎么样？";
+// const MOOD_BUTTONS = ["非常高兴", "开心", "平淡", "难过", "崩溃"];
 
-const RANDOM_CHAT_SUFFIX = "\n\n 要进一步解析一下吗？";
-
-type TagRow = { tag: string; tag_1?: string; content: string };
-
-function formatTagLabel(row: TagRow): string {
-  return row.tag_1 ? `${row.tag}·${row.tag_1}` : row.tag;
-}
-
-/** Dao CSV: random tag or tag_1, then a random content line that matches that word */
-function pickDaoRandomChat(tagRows: TagRow[]): { userWord: string; content: string } | null {
-  if (tagRows.length === 0) return null;
-  const words: string[] = [];
-  for (const row of tagRows) {
-    if (row.tag) words.push(row.tag);
-    if (row.tag_1) words.push(row.tag_1);
-  }
-  if (words.length === 0) return null;
-  const userWord = words[Math.floor(Math.random() * words.length)];
-  const matching = tagRows.filter((r) => r.tag === userWord || r.tag_1 === userWord);
-  const pool = matching.length > 0 ? matching : tagRows;
-  const row = pool[Math.floor(Math.random() * pool.length)];
-  return { userWord, content: row.content };
-}
-
-function parseTagCsv(csvText: string, format: TagFormat = "single"): TagRow[] {
+function parseQuestionCsv(csvText: string): string[] {
   const lines = csvText.trim().split(/\r?\n/);
-  const rows: TagRow[] = [];
-  for (let i = 1; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (!line) continue;
-    if (format === "dao") {
-      const parts = line.split(",");
-      if (parts.length >= 3) {
-        rows.push({
-          tag: parts[0].trim(),
-          tag_1: parts[1].trim(),
-          content: parts.slice(2).join(",").trim(),
-        });
-      }
-    } else {
-      const commaIdx = line.indexOf(",");
-      if (commaIdx >= 0) {
-        rows.push({
-          tag: line.slice(0, commaIdx).trim(),
-          content: line.slice(commaIdx + 1).trim(),
-        });
-      }
-    }
-  }
-  return rows;
+  if (lines.length <= 1) return [];
+  return lines.slice(1).map((line) => line.trim()).filter(Boolean);
 }
+
+function getUrlUuid(): string | undefined {
+  if (typeof window === "undefined") return undefined;
+  return new URLSearchParams(window.location.search).get("uuid")?.trim() || undefined;
+}
+
+type SelectionInfo = { text: string; rect: DOMRect };
+
+/**
+ * Read the current text selection. Deep Chat renders messages inside a shadow
+ * root, whose selection is NOT exposed via `window.getSelection()` in Chrome,
+ * so we also probe the chat element's shadow root (non-standard getSelection).
+ */
+function getSelectionInfo(chatEl: HTMLElement | null): SelectionInfo | null {
+  const collect = (sel: Selection | null | undefined): SelectionInfo | null => {
+    if (!sel || sel.rangeCount === 0) return null;
+    const text = sel.toString().trim();
+    if (!text) return null;
+    return { text, rect: sel.getRangeAt(0).getBoundingClientRect() };
+  };
+
+  const fromWindow = collect(window.getSelection());
+  if (fromWindow) return fromWindow;
+
+  const shadow = chatEl?.shadowRoot as
+    | (ShadowRoot & { getSelection?: () => Selection | null })
+    | undefined;
+  return collect(shadow?.getSelection?.());
+}
+
+/** pending = fetching corpus; string = prefill text; null = no uuid prefill */
+type UuidInputPrefill = "pending" | string | null;
 
 export function ChatClient({
   homepageName,
@@ -186,17 +186,49 @@ export function ChatClient({
   systemPromptEachRequest = false,
   historyStorageKey = DEFAULT_HISTORY_KEY,
   tagCsvUrl = DEFAULT_TAG_CSV_URL,
-  tagFormat = "single",
   chatTitle,
+  additionalSourceUrl,
+  additionalSourceTableName,
+  ttsApiUrl,
+  ttsVoice,
 }: ChatClientProps) {
   const chatRef = useRef<DeepChatElement | null>(null);
   const historyRef = useRef<HistoryMessage[]>([]);
   const lastQuestionRef = useRef<string>("");
+  const aidimsumCorpusRef = useRef<CorpusItem[]>([]);
+  const [uuidInputPrefill, setUuidInputPrefill] = useState<UuidInputPrefill>(() =>
+    getUrlUuid() ? "pending" : null,
+  );
   const [initialHistory, setInitialHistory] = useState<
     Array<{ role: string; text?: string; html?: string }>
   >([]);
-  const [tagRows, setTagRows] = useState<TagRow[]>([]);
+  const [randomQuestions, setRandomQuestions] = useState<string[]>([]);
   const heading = chatTitle ?? `${homepageName} Chat`;
+
+  // ?uuid=… → fetch /v2/corpus_item, then mount DeepChat with defaultInput
+  useEffect(() => {
+    if (uuidInputPrefill !== "pending") return;
+
+    const uuid = getUrlUuid();
+    if (!uuid || !additionalSourceUrl) {
+      setUuidInputPrefill(null);
+      return;
+    }
+
+    let cancelled = false;
+    fetchCorpusItem(additionalSourceUrl, { unique_id: uuid })
+      .then((item) => {
+        if (cancelled) return;
+        setUuidInputPrefill(item ? JSON.stringify(item, null, 2) : null);
+      })
+      .catch(() => {
+        if (!cancelled) setUuidInputPrefill(null);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [uuidInputPrefill, additionalSourceUrl]);
 
   // Load chat history from localStorage on mount, including citations for assistant messages
   useEffect(() => {
@@ -216,13 +248,13 @@ export function ChatClient({
     );
   }, [historyStorageKey]);
 
-  // Load tag CSV from public for "随便聊聊" button
+  // Load question CSV from public for "随便聊聊" button
   useEffect(() => {
     fetch(tagCsvUrl)
       .then((r) => r.text())
-      .then((text) => setTagRows(parseTagCsv(text, tagFormat)))
-      .catch(() => setTagRows([]));
-  }, [tagCsvUrl, tagFormat]);
+      .then((text) => setRandomQuestions(parseQuestionCsv(text)))
+      .catch(() => setRandomQuestions([]));
+  }, [tagCsvUrl]);
 
   const clearChatHistory = useCallback(() => {
     localStorage.removeItem(historyStorageKey);
@@ -235,113 +267,129 @@ export function ChatClient({
   }, []);
 
   const sendRandomChat = useCallback(() => {
-    if (tagRows.length === 0) return;
+    if (randomQuestions.length === 0) return;
     const el = chatRef.current;
-    if (!el?.addMessage) return;
+    if (!el?.submitUserMessage) return;
+    const question = randomQuestions[Math.floor(Math.random() * randomQuestions.length)];
+    el.submitUserMessage(question);
+  }, [randomQuestions]);
 
-    let userText: string;
-    let displayText: string;
+  const setupChatElement = useCallback(
+    (el: DeepChatElement) => {
+      chatRef.current = el;
 
-    if (tagFormat === "dao") {
-      const picked = pickDaoRandomChat(tagRows);
-      if (!picked) return;
-      userText = picked.userWord;
-      displayText = "【" + picked.userWord + "】" + picked.content + RANDOM_CHAT_SUFFIX;
-    } else {
-      const row = tagRows[Math.floor(Math.random() * tagRows.length)];
-      const tagLabel = formatTagLabel(row);
-      userText = tagLabel;
-      displayText = "【" + tagLabel + "】" + row.content + RANDOM_CHAT_SUFFIX;
-    }
-
-    // Add user message and assistant message directly — no API call
-    el.addMessage({ role: "user", text: userText }, false);
-    el.addMessage({ role: "ai", html: `<div class="markdown-body">${markdownToHtml(displayText)}</div>` }, false);
-    historyRef.current = [
-      ...historyRef.current,
-      { role: "user", content: userText },
-      { role: "assistant", content: displayText },
-    ];
-    saveHistory(historyStorageKey, historyRef.current);
-  }, [tagRows, tagFormat, historyStorageKey]);
-
-  useEffect(() => {
-    const el = chatRef.current;
-    if (!el) return;
-
-    el.request = {
-      url: chatApiUrl,
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-    };
-
-    // Transform Deep Chat messages into the search_and_chat RAG request format:
-    // { q, search_mode, lib?, topk, messages }
-    // Use historyRef (loaded from localStorage) as prior context for the API
-    el.requestInterceptor = (details: InterceptorDetails) => {
-      const allMessages = (details.body.messages || []).map((msg) => ({
-        role: msg.role,
-        content: msg.text ?? msg.content ?? "",
-      }));
-
-      const lastMessage = allMessages[allMessages.length - 1];
-      const currentQuestion = lastMessage?.content ?? "";
-      lastQuestionRef.current = currentQuestion;
-
-      const priorMessages: Array<{ role: string; content: string }> =
-        historyRef.current.map((m) => ({ role: m.role, content: m.content }));
-
-      const payload: Record<string, unknown> = {
-        q: currentQuestion,
-        search_mode: searchMode,
-        topk: 10,
-        messages: priorMessages,
+      el.request = {
+        url: chatApiUrl,
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
       };
 
-      // system_prompt: first message only, or every request when systemPromptEachRequest
-      if (
-        prompt1 != null &&
-        String(prompt1).trim() !== "" &&
-        (priorMessages.length === 0 || systemPromptEachRequest)
-      ) {
-        const raw =
-          typeof prompt1 === "number" ? String(prompt1) : String(prompt1).trim();
-        payload.system_prompt = /^\d+$/.test(raw) ? parseInt(raw, 10) : raw;
-      }
+      // Transform Deep Chat messages into the search_and_chat RAG request format:
+      // { q, search_mode, lib?, topk, messages }
+      // Use historyRef (loaded from localStorage) as prior context for the API
+      el.requestInterceptor = async (details: InterceptorDetails) => {
+        const allMessages = (details.body.messages || []).map((msg) => ({
+          role: msg.role,
+          content: msg.text ?? msg.content ?? "",
+        }));
 
-      // DO NOT REMOVE THIS CONSOLE.LOG
-      console.log("payload", payload);
+        const lastMessage = allMessages[allMessages.length - 1];
+        const currentQuestion = lastMessage?.content ?? "";
+        lastQuestionRef.current = currentQuestion;
+        aidimsumCorpusRef.current = [];
 
-      if (searchMode === "tfidf" || (searchMode === "vector" && chatLib)) {
-        payload.lib = chatLib;
-      }
+        const priorMessages: Array<{ role: string; content: string }> =
+          historyRef.current.map((m) => ({ role: m.role, content: m.content }));
 
-      details.body = payload as unknown as InterceptorDetails["body"];
-      return details;
-    };
+        let questionForApi = currentQuestion;
 
-    // Append source citations as collapsible <details>, persist history with citations
-    el.responseInterceptor = (response: ResponseDetails) => {
-      const answerText = response.text ?? "";
+        if (additionalSourceUrl && currentQuestion.trim()) {
+          const corpusItems = await fetchAdditionalCorpus(
+            additionalSourceUrl,
+            currentQuestion,
+            additionalSourceTableName,
+          );
+          aidimsumCorpusRef.current = corpusItems;
+          if (corpusItems.length > 0) {
+            questionForApi = `${currentQuestion}\n\n--- AI Dimsum 语料参考 ---\n${formatCorpusContext(corpusItems)}`;
+          }
+        }
 
-      // Save the exchange with citations (filtered when calling API)
-      historyRef.current = [
-        ...historyRef.current,
-        { role: "user", content: lastQuestionRef.current },
-        {
-          role: "assistant",
-          content: answerText,
-          citations: response.sources,
-        },
-      ];
-      saveHistory(historyStorageKey, historyRef.current);
+        const payload: Record<string, unknown> = {
+          q: questionForApi,
+          search_mode: searchMode,
+          topk: 10,
+          messages: priorMessages,
+        };
 
-      if (!response.sources?.length) {
-        return { html: `<div class="markdown-body">${markdownToHtml(answerText)}</div>` };
-      }
-      return { html: buildCitationHtml(answerText, response.sources) };
-    };
-  }, [chatApiUrl, chatLib, searchMode, prompt1, systemPromptEachRequest, historyStorageKey]);
+        // system_prompt: first message only, or every request when systemPromptEachRequest
+        if (
+          prompt1 != null &&
+          String(prompt1).trim() !== "" &&
+          (priorMessages.length === 0 || systemPromptEachRequest)
+        ) {
+          const raw =
+            typeof prompt1 === "number" ? String(prompt1) : String(prompt1).trim();
+          payload.system_prompt = /^\d+$/.test(raw) ? parseInt(raw, 10) : raw;
+        }
+
+        // DO NOT REMOVE THIS CONSOLE.LOG
+        console.log("payload", payload);
+
+        if (searchMode === "tfidf" || (searchMode === "vector" && chatLib)) {
+          payload.lib = chatLib;
+        }
+
+        details.body = payload as unknown as InterceptorDetails["body"];
+        return details;
+      };
+
+      // Append source citations as collapsible <details>, persist history with citations
+      el.responseInterceptor = (response: ResponseDetails) => {
+        const answerText = response.text ?? "";
+        const ragSources = response.sources ?? [];
+        const aidimsumSources = corpusItemsToSources(
+          aidimsumCorpusRef.current,
+          ragSources.length + 1,
+        );
+        const allSources: Source[] = [...ragSources, ...aidimsumSources];
+
+        // Save the exchange with citations (filtered when calling API)
+        historyRef.current = [
+          ...historyRef.current,
+          { role: "user", content: lastQuestionRef.current },
+          {
+            role: "assistant",
+            content: answerText,
+            citations: allSources.length > 0 ? allSources : undefined,
+          },
+        ];
+        saveHistory(historyStorageKey, historyRef.current);
+
+        if (!allSources.length) {
+          return { html: `<div class="markdown-body">${markdownToHtml(answerText)}</div>` };
+        }
+        return { html: buildCitationHtml(answerText, allSources) };
+      };
+    },
+    [
+      chatApiUrl,
+      chatLib,
+      searchMode,
+      prompt1,
+      systemPromptEachRequest,
+      historyStorageKey,
+      additionalSourceUrl,
+      additionalSourceTableName,
+    ],
+  );
+
+  const handleChatRender = useCallback(
+    (el: HTMLElement) => {
+      setupChatElement(el as DeepChatElement);
+    },
+    [setupChatElement],
+  );
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
@@ -359,14 +407,28 @@ export function ChatClient({
           </div>
           {/* <p className="text-muted-foreground">{chatbotDescription}</p> */}
           <div className="rounded-xl border border-border bg-card p-3 shadow-sm [&>deep-chat]:!w-full [&>deep-chat]:!block">
-            <DeepChat
-              ref={chatRef}
-              style={{ borderRadius: "12px", height: "550px" }}
-              introMessage={{ text: chatbotIntroMessage }}
-              history={initialHistory}
-            />
+            {uuidInputPrefill === "pending" ? (
+              <div
+                className="flex items-center justify-center text-sm text-muted-foreground"
+                style={{ borderRadius: "12px", height: "550px" }}
+              >
+                加载语料…
+              </div>
+            ) : (
+              <DeepChat
+                style={{ borderRadius: "12px", height: "550px" }}
+                introMessage={{ text: chatbotIntroMessage }}
+                history={initialHistory}
+                defaultInput={
+                  typeof uuidInputPrefill === "string"
+                    ? { text: uuidInputPrefill }
+                    : undefined
+                }
+                onComponentRender={handleChatRender}
+              />
+            )}
             <br></br>
-            <div className="mb-3 flex flex-wrap items-center justify-center gap-2">
+            {/* <div className="mb-3 flex flex-wrap items-center justify-center gap-2">
               <p className="text-sm text-muted-foreground shrink-0">{MOOD_PROMPT}</p>
               <div className="flex flex-wrap gap-2">
                 {MOOD_BUTTONS.map((label) => (
@@ -380,20 +442,109 @@ export function ChatClient({
                   </button>
                 ))}
               </div>
-            </div>
-            <div className="flex justify-center">
+            </div> */}
+            <div className="flex flex-wrap items-center justify-center gap-2">
               <button
                 type="button"
                 onClick={sendRandomChat}
-                disabled={tagRows.length === 0}
+                disabled={randomQuestions.length === 0}
                 className="rounded-lg border border-border bg-muted/50 px-8 py-2 text-sm text-foreground transition-colors hover:bg-muted disabled:opacity-50 min-w-[12rem]"
               >
                 👉&nbsp;&nbsp;随便聊聊&nbsp;&nbsp;👈
               </button>
+              {ttsApiUrl && (
+                <TtsSelectionButton
+                  chatElRef={chatRef}
+                  ttsApiUrl={ttsApiUrl}
+                  ttsVoice={ttsVoice}
+                />
+              )}
             </div>
           </div>
         </div>
       </main>
     </div>
+  );
+}
+
+/**
+ * 「发音」button shown next to「随便聊聊」only when text is selected. Kept as a
+ * separate component so selection-driven state updates re-render only this
+ * button and NOT the parent (re-rendering the parent would pass new object
+ * props to <DeepChat> and reset the conversation).
+ */
+function TtsSelectionButton({
+  chatElRef,
+  ttsApiUrl,
+  ttsVoice,
+}: {
+  chatElRef: RefObject<DeepChatElement | null>;
+  ttsApiUrl: string;
+  ttsVoice?: string;
+}) {
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const textRef = useRef<string>("");
+  const [hasSelection, setHasSelection] = useState(false);
+  const [status, setStatus] = useState<"idle" | "loading" | "playing">("idle");
+
+  useEffect(() => {
+    const updateFromSelection = () => {
+      const info = getSelectionInfo(chatElRef.current);
+      textRef.current = info?.text ?? "";
+      setHasSelection(Boolean(info));
+    };
+
+    // Run after the selection has settled (mouseup fires before it updates)
+    const handle = () => window.setTimeout(updateFromSelection, 0);
+    document.addEventListener("mouseup", handle);
+    document.addEventListener("touchend", handle);
+    return () => {
+      document.removeEventListener("mouseup", handle);
+      document.removeEventListener("touchend", handle);
+    };
+  }, [chatElRef]);
+
+  const playTts = useCallback(async () => {
+    const text = textRef.current.trim();
+    if (!text) return;
+
+    setStatus("loading");
+    try {
+      const res = await fetch(ttsApiUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(ttsVoice ? { text, voice: ttsVoice } : { text }),
+      });
+      if (!res.ok) throw new Error(`TTS ${res.status}`);
+      const data = (await res.json()) as { audio_url?: string };
+      if (!data.audio_url) throw new Error("no audio_url");
+
+      if (!audioRef.current) audioRef.current = new Audio();
+      const audio = audioRef.current;
+      audio.src = data.audio_url;
+      audio.onended = () => setStatus("idle");
+      audio.onerror = () => setStatus("idle");
+      setStatus("playing");
+      await audio.play();
+    } catch (err) {
+      // DO NOT REMOVE THIS CONSOLE.LOG
+      console.log("tts error", err);
+      setStatus("idle");
+    }
+  }, [ttsApiUrl, ttsVoice]);
+
+  if (!hasSelection) return null;
+
+  return (
+    <button
+      type="button"
+      // Keep the current selection when clicking (prevents mousedown from clearing it)
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={playTts}
+      disabled={status === "loading"}
+      className="rounded-lg border border-border bg-muted/50 px-8 py-2 text-sm text-foreground transition-colors hover:bg-muted disabled:opacity-50"
+    >
+      {status === "loading" ? "🔊 生成中…" : status === "playing" ? "🔊 播放中" : "🔊 发音"}
+    </button>
   );
 }
