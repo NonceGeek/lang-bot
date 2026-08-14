@@ -17,6 +17,13 @@ export type CorpusItem = {
   };
 };
 
+export type CorpusCategory = {
+  id?: number;
+  name: string;
+  nickname?: string;
+  description?: string;
+};
+
 const DEFAULT_TABLE_NAME = "cantonese_corpus_all";
 const DEFAULT_LIMIT = 5;
 
@@ -61,6 +68,40 @@ export async function searchCorpusText(
   return data.filter(isCorpusItem);
 }
 
+/** GET /corpus_categories — all category metadata (name → nickname) */
+export async function fetchCorpusCategories(baseUrl: string): Promise<CorpusCategory[]> {
+  const url = `${normalizeBaseUrl(baseUrl)}/corpus_categories`;
+  const data = await fetchJson<unknown>(url);
+  if (!Array.isArray(data)) return [];
+  return data.filter(
+    (row): row is CorpusCategory =>
+      !!row &&
+      typeof row === "object" &&
+      typeof (row as CorpusCategory).name === "string",
+  );
+}
+
+export function buildCategoryNicknameMap(
+  categories: CorpusCategory[],
+): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const cat of categories) {
+    const name = cat.name?.trim();
+    if (!name) continue;
+    map.set(name, cat.nickname?.trim() || name);
+  }
+  return map;
+}
+
+export function resolveCategoryNickname(
+  categoryName: string | undefined,
+  nicknames: Map<string, string>,
+): string {
+  const key = categoryName?.trim();
+  if (!key) return "AI Dimsum";
+  return nicknames.get(key) ?? key;
+}
+
 /** GET /v2/corpus_item — lookup by unique_id or exact data */
 export async function fetchCorpusItem(
   baseUrl: string,
@@ -99,10 +140,10 @@ export async function fetchAdditionalCorpus(
 
 export function formatCorpusItemText(item: CorpusItem): string {
   const lines: string[] = [];
-  if (item.data) lines.push(item.data);
+  // if (item.data) lines.push(item.data);
 
   if (item.note?.meaning?.length) {
-    lines.push(`释义: ${item.note.meaning.join("；")}`);
+    lines.push(`内容: ${item.note.meaning.join("；")}`);
   }
   if (item.note?.pinyin?.length) {
     lines.push(`拼音: ${item.note.pinyin.join("，")}`);
@@ -114,11 +155,9 @@ export function formatCorpusItemText(item: CorpusItem): string {
   const blocks = item.structured_note?.data?.[0]?.blocks ?? [];
   for (const block of blocks) {
     if (block.type === "definition" && block.content) {
-      lines.push(`释义: ${block.content}`);
+      lines.push(`内容: ${block.content}`);
     }
   }
-
-  if (item.category) lines.push(`分类: ${item.category}`);
   if (item.tags?.length) lines.push(`标签: ${item.tags.join(", ")}`);
 
   return lines.join("\n");
@@ -149,4 +188,23 @@ export function corpusItemsToSources(items: CorpusItem[], startRank = 1): Corpus
     text: formatCorpusItemText(item),
     resource_name: item.category ? `AI Dimsum · ${item.category}` : "AI Dimsum",
   }));
+}
+
+/** DimSum public search — opens corpus item on v1.search.aidimsum.com */
+export function corpusItemSearchUrl(item: CorpusItem): string {
+  const q = item.data?.trim();
+  if (!q) return "";
+  const params = new URLSearchParams({ q, dataset: "all" });
+  return `https://v1.search.aidimsum.com/search?${params}`;
+}
+
+/** Prefer a block URL; otherwise /v2/corpus_item?unique_id=… */
+export function corpusItemLink(baseUrl: string, item: CorpusItem): string {
+  const blockUrl = item.structured_note?.data?.[0]?.blocks?.find((b) => b.url?.trim())?.url?.trim();
+  if (blockUrl) return blockUrl;
+  const uuid = item.unique_id?.trim();
+  if (uuid) {
+    return `${normalizeBaseUrl(baseUrl)}/v2/corpus_item?unique_id=${encodeURIComponent(uuid)}`;
+  }
+  return "";
 }

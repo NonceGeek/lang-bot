@@ -1,14 +1,21 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback, type RefObject } from "react";
+import { useEffect, useRef, useState, useCallback, type RefObject, type MutableRefObject } from "react";
 import { marked } from "marked";
 import { DeepChat } from "deep-chat-react";
 import { Header } from "@/components/header";
 import {
+  buildCategoryNicknameMap,
+  corpusItemLink,
+  corpusItemSearchUrl,
   corpusItemsToSources,
   fetchAdditionalCorpus,
+  fetchCorpusCategories,
   fetchCorpusItem,
   formatCorpusContext,
+  formatCorpusItemText,
+  resolveCategoryNickname,
+  searchCorpusText,
   type CorpusItem,
 } from "@/lib/aidimsum-corpus";
 
@@ -31,10 +38,25 @@ type Source = {
   };
 };
 
+type ZhihuSearchItem = {
+  title: string;
+  url: string;
+  author_name?: string;
+  summary?: string;
+  vote_up_count?: number;
+  comment_count?: number;
+  /** zhihu (default) vs AI Dimsum /v2/text_search */
+  source?: "zhihu" | "dimsum";
+  /** AI Dimsum category key (maps to nickname via /corpus_categories) */
+  category?: string;
+};
+
 type HistoryMessage = {
   role: string;
   content: string;
   citations?: Source[];
+  /** Zhihu「联网搜索」titles shown under the answer */
+  webSearchItems?: ZhihuSearchItem[];
 };
 
 function loadHistory(storageKey: string): HistoryMessage[] {
@@ -54,24 +76,208 @@ function markdownToHtml(markdown: string): string {
   return marked.parse(markdown, { async: false }) as string;
 }
 
-function buildCitationHtml(content: string, sources: Source[]): string {
-  const citationItems = sources
-    .map((s) => {
-      const resName = s.resource_name ?? s.source;
-      const text = s.chunk
-        ? `<strong>[${s.rank}] 《${s.chunk.book_title}》${s.chunk.chapter_title}</strong><br/>${s.chunk.text}`
-        : `<strong>[${s.rank}]</strong><br/>${s.text ?? ""} —— ${resName ? `${resName}` : ""}`;
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
 
-      return `<div style="margin-bottom:8px;padding:6px 8px;background:rgba(0,0,0,0.03);border-radius:6px;font-size:0.85em;line-height:1.5">${text}</div>`;
+function encodeZhihuItem(item: ZhihuSearchItem): string {
+  return encodeURIComponent(
+    JSON.stringify({
+      title: item.title ?? "",
+      url: item.url ?? "",
+      author_name: item.author_name ?? "",
+      summary: item.summary ?? "",
+      vote_up_count: Number(item.vote_up_count ?? 0) || 0,
+      comment_count: Number(item.comment_count ?? 0) || 0,
+      source: item.source ?? "zhihu",
+      category: item.category ?? "",
+    }),
+  );
+}
+
+function decodeZhihuItem(raw: string | undefined): ZhihuSearchItem | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(decodeURIComponent(raw)) as ZhihuSearchItem;
+    if (!parsed || typeof parsed !== "object") return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function buildWebSearchListHtml(
+  items: ZhihuSearchItem[],
+  opts: { showVotes: boolean },
+): string {
+  return items
+    .map((item, i) => {
+      const title = escapeHtml(item.title || "(无标题)");
+      const votes = Number(item.vote_up_count ?? 0) || 0;
+      const comments = Number(item.comment_count ?? 0) || 0;
+      const payload = encodeZhihuItem(item);
+      const meta = opts.showVotes
+        ? `<span style="color:#64748b;font-size:0.85em;white-space:nowrap">👍 ${votes}　💬 ${comments}</span>`
+        : "";
+      return (
+        `<li style="margin:4px 0;display:flex;align-items:flex-start;gap:6px;flex-wrap:wrap">` +
+        `<span style="color:#64748b;min-width:1.5em">${i + 1}.</span>` +
+        `<button type="button" data-zhihu-item="${payload}" ` +
+        `style="background:none;border:none;padding:0;margin:0;color:#2563eb;text-decoration:underline;cursor:pointer;font:inherit;text-align:left;flex:1;min-width:0">` +
+        `${title}` +
+        `</button>` +
+        meta +
+        `</li>`
+      );
     })
     .join("");
+}
+
+function buildWebSearchHtml(items: ZhihuSearchItem[]): string {
+  if (!items.length) return "";
+  const zhihu = items
+    .filter((item) => item.source !== "dimsum")
+    .sort(
+      (a, b) => (Number(b.vote_up_count ?? 0) || 0) - (Number(a.vote_up_count ?? 0) || 0),
+    );
+  const dimsum = items.filter((item) => item.source === "dimsum");
+  const zhihuList = zhihu.length
+    ? `<ol style="margin:0;padding-left:0;list-style:none">${buildWebSearchListHtml(zhihu, { showVotes: true })}</ol>`
+    : "";
+  const dimsumList = dimsum.length
+    ? `<div style="font-weight:600;color:#475569;margin:8px 0 4px;font-size:0.85em">AI Dimsum</div>` +
+      `<ol style="margin:0;padding-left:0;list-style:none">${buildWebSearchListHtml(dimsum, { showVotes: false })}</ol>`
+    : "";
   return (
-    `<div class="markdown-body">${markdownToHtml(content)}</div>` +
-    `<details style="margin-top:12px;cursor:pointer">` +
-    `<summary style="font-size:0.9em;color:#666;user-select:none">📚 引用来源（${sources.length} 条）</summary>` +
-    `<div style="margin-top:8px">${citationItems}</div>` +
-    `</details>`
+    `<div style="margin-top:12px;padding:8px 10px;background:rgba(37,99,235,0.06);border-radius:8px;font-size:0.9em;line-height:1.5">` +
+    `<div style="font-weight:600;color:#334155;margin-bottom:6px">🌐 联网搜索</div>` +
+    zhihuList +
+    dimsumList +
+    `</div>`
   );
+}
+
+function corpusItemsToWebSearchItems(
+  items: CorpusItem[],
+  baseUrl: string,
+  categoryNicknames: Map<string, string>,
+): ZhihuSearchItem[] {
+  return items.map((item) => {
+    const uuid = item.unique_id?.trim();
+    const categoryKey = item.category?.trim() || "";
+    const nickname = resolveCategoryNickname(categoryKey, categoryNicknames);
+    return {
+      title: item.data?.trim() || uuid || "(语料)",
+      url: corpusItemSearchUrl(item) || corpusItemLink(baseUrl, item),
+      author_name: nickname,
+      category: categoryKey,
+      summary: formatCorpusItemText(item),
+      source: "dimsum" as const,
+    };
+  });
+}
+
+function buildAnswerHtml(
+  content: string,
+  webSearchItems?: ZhihuSearchItem[],
+): string {
+  const body = `<div class="markdown-body">${markdownToHtml(content)}</div>`;
+  return body + buildWebSearchHtml(webSearchItems ?? []);
+}
+
+/** Format「联网搜索」hits for LLM context (appended to `q`). */
+function formatWebSearchContext(items: ZhihuSearchItem[]): string {
+  if (!items.length) return "";
+  return items
+    .map((item, i) => {
+      const lines = [`[${i + 1}] ${item.title || "(无标题)"}`];
+      if (item.source === "dimsum") {
+        if (item.author_name?.trim()) lines.push(`分类: ${item.author_name.trim()}`);
+      } else {
+        if (item.author_name?.trim()) lines.push(`作者: ${item.author_name.trim()}`);
+        lines.push(
+          `赞同: ${Number(item.vote_up_count ?? 0) || 0}  评论: ${Number(item.comment_count ?? 0) || 0}`,
+        );
+      }
+      if (item.summary?.trim()) lines.push(`摘要: ${item.summary.trim()}`);
+      if (item.url?.trim()) lines.push(`链接: ${item.url.trim()}`);
+      return lines.join("\n");
+    })
+    .join("\n\n");
+}
+
+/** Pull a search keyword from the user question for Zhihu zhihu-search. */
+function extractSearchKeyword(question: string): string {
+  let q = question.trim();
+  // Drop trailing punctuation / question marks common in Chinese & English
+  q = q.replace(/[？?！!。．.、，,；;：:\s]+$/g, "");
+  // Collapse whitespace
+  q = q.replace(/\s+/g, " ").trim();
+  // Zhihu Query is typically short; keep first ~80 chars
+  if (q.length > 80) q = q.slice(0, 80).trim();
+  return q;
+}
+
+/**
+ * Abstract a short entity/topic keyword for AI Dimsum /v2/text_search.
+ * e.g.「佛山有什么好吃的？」→「佛山」
+ */
+function extractDimsumKeyword(question: string): string {
+  let q = question.trim();
+  q = q.replace(/[？?！!。．.、，,；;：:\s]+$/g, "");
+  q = q.replace(/\s+/g, " ").trim();
+  if (!q) return "";
+
+  // Drop leading prompt fillers
+  q = q.replace(
+    /^(介绍一下|介绍下|请问一下|请问|想问下|想问|帮我查下|帮我|请|说说|讲讲|查一下|查下)\s*/u,
+    "",
+  );
+
+  // 「X有什么好吃的 / 有咩… / 有哪些…」→ X
+  const hasWhat = q.match(
+    /^(.{1,20}?)(有什么|有甚么|有咩|有冇|有哪些|有何)/u,
+  );
+  if (hasWhat?.[1]?.trim()) {
+    return hasWhat[1].trim().replace(/[的地得]$/u, "");
+  }
+
+  // 「X是什么 / 系咩 / 点解 / 怎么样」→ X
+  const isWhat = q.match(
+    /^(.{1,20}?)(是什么|是甚么|系咩|是咩|点解|为什么|怎么样|点样|如何|怎么|几时|何时)/u,
+  );
+  if (isWhat?.[1]?.trim()) {
+    return isWhat[1].trim().replace(/[的地得]$/u, "");
+  }
+
+  // Strip trailing descriptive / interrogative tails
+  q = q
+    .replace(/(好吃的|好玩的|好看的|好去处|特色|推荐|地方|美食|景点)$/u, "")
+    .replace(/(呢|啊|呀|吗|嘛|啦|了|的|么|嘛)+$/u, "")
+    .trim();
+
+  // Prefer a short head noun-ish chunk (place/topic), max ~12 chars
+  if (q.length > 12) q = q.slice(0, 12).trim();
+  return q || extractSearchKeyword(question);
+}
+
+async function fetchZhihuSearch(
+  apiUrl: string,
+  query: string,
+  count = 5,
+): Promise<ZhihuSearchItem[]> {
+  const res = await fetch(apiUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ q: query, count }),
+  });
+  if (!res.ok) throw new Error(`zhihu-search ${res.status}`);
+  const data = (await res.json()) as { items?: ZhihuSearchItem[] };
+  return Array.isArray(data.items) ? data.items.filter((i) => i?.title) : [];
 }
 
 type ChatClientProps = {
@@ -99,6 +305,8 @@ type ChatClientProps = {
   ttsApiUrl?: string;
   /** Optional voice for TTS (e.g. "Kiki" female, "Rocky" male) */
   ttsVoice?: string;
+  /** When set, shows「联网搜索」toggle (default on) and calls this Zhihu search API */
+  zhihuSearchApiUrl?: string;
 };
 
 type ChatMessage = {
@@ -191,11 +399,17 @@ export function ChatClient({
   additionalSourceTableName,
   ttsApiUrl,
   ttsVoice,
+  zhihuSearchApiUrl,
 }: ChatClientProps) {
   const chatRef = useRef<DeepChatElement | null>(null);
   const historyRef = useRef<HistoryMessage[]>([]);
   const lastQuestionRef = useRef<string>("");
   const aidimsumCorpusRef = useRef<CorpusItem[]>([]);
+  /** Read by requestInterceptor — updated by WebSearchToggle without re-rendering DeepChat */
+  const webSearchEnabledRef = useRef(true);
+  const zhihuItemsRef = useRef<ZhihuSearchItem[]>([]);
+  const categoryNicknamesRef = useRef<Map<string, string>>(new Map());
+  const categoriesReadyRef = useRef<Promise<void> | null>(null);
   const [uuidInputPrefill, setUuidInputPrefill] = useState<UuidInputPrefill>(() =>
     getUrlUuid() ? "pending" : null,
   );
@@ -204,6 +418,23 @@ export function ChatClient({
   >([]);
   const [randomQuestions, setRandomQuestions] = useState<string[]>([]);
   const heading = chatTitle ?? `${homepageName} Chat`;
+
+  // Load AI Dimsum /corpus_categories once (name → nickname for modal & web search)
+  useEffect(() => {
+    if (!additionalSourceUrl) return;
+    let cancelled = false;
+    categoriesReadyRef.current = fetchCorpusCategories(additionalSourceUrl)
+      .then((categories) => {
+        if (cancelled) return;
+        categoryNicknamesRef.current = buildCategoryNicknameMap(categories);
+      })
+      .catch(() => {
+        if (!cancelled) categoryNicknamesRef.current = new Map();
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [additionalSourceUrl]);
 
   // ?uuid=… → fetch /v2/corpus_item, then mount DeepChat with defaultInput
   useEffect(() => {
@@ -238,8 +469,11 @@ export function ChatClient({
       saved.map((m) => {
         const role = m.role === "assistant" ? "ai" : m.role;
         if (m.role === "assistant") {
-          if (m.citations?.length) {
-            return { role, html: buildCitationHtml(m.content, m.citations) };
+          if (m.webSearchItems?.length) {
+            return {
+              role,
+              html: buildAnswerHtml(m.content, m.webSearchItems),
+            };
           }
           return { role, html: `<div class="markdown-body">${markdownToHtml(m.content)}</div>` };
         }
@@ -297,6 +531,7 @@ export function ChatClient({
         const currentQuestion = lastMessage?.content ?? "";
         lastQuestionRef.current = currentQuestion;
         aidimsumCorpusRef.current = [];
+        zhihuItemsRef.current = [];
 
         const priorMessages: Array<{ role: string; content: string }> =
           historyRef.current.map((m) => ({ role: m.role, content: m.content }));
@@ -304,15 +539,65 @@ export function ChatClient({
         let questionForApi = currentQuestion;
 
         if (additionalSourceUrl && currentQuestion.trim()) {
+          const dimsumKeyword =
+            extractDimsumKeyword(currentQuestion) || currentQuestion.trim();
           const corpusItems = await fetchAdditionalCorpus(
             additionalSourceUrl,
-            currentQuestion,
+            dimsumKeyword,
             additionalSourceTableName,
           );
           aidimsumCorpusRef.current = corpusItems;
           if (corpusItems.length > 0) {
             questionForApi = `${currentQuestion}\n\n--- AI Dimsum 语料参考 ---\n${formatCorpusContext(corpusItems)}`;
           }
+        }
+
+        // 「联网搜索」: Zhihu uses fuller query; Dimsum uses abstracted keyword (e.g. 佛山)
+        if (webSearchEnabledRef.current && currentQuestion.trim() && (zhihuSearchApiUrl || additionalSourceUrl)) {
+          if (categoriesReadyRef.current) {
+            await categoriesReadyRef.current;
+          }
+          const categoryNicknames = categoryNicknamesRef.current;
+          const zhihuKeyword = extractSearchKeyword(currentQuestion);
+          const dimsumKeyword = extractDimsumKeyword(currentQuestion);
+          if (zhihuKeyword || dimsumKeyword) {
+            const [zhihuItems, dimsumItems] = await Promise.all([
+              zhihuSearchApiUrl && zhihuKeyword
+                ? fetchZhihuSearch(zhihuSearchApiUrl, zhihuKeyword, 5).catch((err) => {
+                    // DO NOT REMOVE THIS CONSOLE.LOG
+                    console.log("zhihu-search error", err);
+                    return [] as ZhihuSearchItem[];
+                  })
+                : Promise.resolve([] as ZhihuSearchItem[]),
+              additionalSourceUrl && dimsumKeyword
+                ? searchCorpusText(
+                    additionalSourceUrl,
+                    dimsumKeyword,
+                    additionalSourceTableName,
+                    5,
+                  )
+                    .then((items) =>
+                      corpusItemsToWebSearchItems(
+                        items,
+                        additionalSourceUrl,
+                        categoryNicknames,
+                      ),
+                    )
+                    .catch((err) => {
+                      // DO NOT REMOVE THIS CONSOLE.LOG
+                      console.log("dimsum text_search error", err);
+                      return [] as ZhihuSearchItem[];
+                    })
+                : Promise.resolve([] as ZhihuSearchItem[]),
+            ]);
+            zhihuItemsRef.current = [...zhihuItems, ...dimsumItems];
+            // DO NOT REMOVE THIS CONSOLE.LOG
+            console.log("web-search", { zhihuKeyword, dimsumKeyword }, zhihuItemsRef.current);
+          }
+        }
+
+        if (zhihuItemsRef.current.length > 0) {
+          questionForApi = `${questionForApi}\n\n--- 联网搜索参考 ---\n${formatWebSearchContext(zhihuItemsRef.current)}`;
         }
 
         const payload: Record<string, unknown> = {
@@ -344,7 +629,7 @@ export function ChatClient({
         return details;
       };
 
-      // Append source citations as collapsible <details>, persist history with citations
+      // Persist history; render answer + optional「联网搜索」, no citation UI
       el.responseInterceptor = (response: ResponseDetails) => {
         const answerText = response.text ?? "";
         const ragSources = response.sources ?? [];
@@ -353,6 +638,7 @@ export function ChatClient({
           ragSources.length + 1,
         );
         const allSources: Source[] = [...ragSources, ...aidimsumSources];
+        const webSearchItems = zhihuItemsRef.current;
 
         // Save the exchange with citations (filtered when calling API)
         historyRef.current = [
@@ -362,14 +648,14 @@ export function ChatClient({
             role: "assistant",
             content: answerText,
             citations: allSources.length > 0 ? allSources : undefined,
+            webSearchItems: webSearchItems.length > 0 ? webSearchItems : undefined,
           },
         ];
         saveHistory(historyStorageKey, historyRef.current);
 
-        if (!allSources.length) {
-          return { html: `<div class="markdown-body">${markdownToHtml(answerText)}</div>` };
-        }
-        return { html: buildCitationHtml(answerText, allSources) };
+        return {
+          html: buildAnswerHtml(answerText, webSearchItems),
+        };
       };
     },
     [
@@ -381,6 +667,7 @@ export function ChatClient({
       historyStorageKey,
       additionalSourceUrl,
       additionalSourceTableName,
+      zhihuSearchApiUrl,
     ],
   );
 
@@ -427,6 +714,9 @@ export function ChatClient({
                 onComponentRender={handleChatRender}
               />
             )}
+            {zhihuSearchApiUrl && (
+              <WebSearchToggle enabledRef={webSearchEnabledRef} />
+            )}
             <br></br>
             {/* <div className="mb-3 flex flex-wrap items-center justify-center gap-2">
               <p className="text-sm text-muted-foreground shrink-0">{MOOD_PROMPT}</p>
@@ -463,7 +753,141 @@ export function ChatClient({
           </div>
         </div>
       </main>
+      {(zhihuSearchApiUrl || additionalSourceUrl) && (
+        <WebSearchItemModal categoryNicknamesRef={categoryNicknamesRef} />
+      )}
     </div>
+  );
+}
+
+/**
+ * Modal for a Zhihu search title click. Isolated so opening it does not
+ * re-render <DeepChat>. Uses composedPath() because titles live in the
+ * Deep Chat shadow root.
+ */
+function WebSearchItemModal({
+  categoryNicknamesRef,
+}: {
+  categoryNicknamesRef: MutableRefObject<Map<string, string>>;
+}) {
+  const [item, setItem] = useState<ZhihuSearchItem | null>(null);
+
+  useEffect(() => {
+    const onClick = (event: MouseEvent) => {
+      const path = event.composedPath();
+      const trigger = path.find(
+        (node): node is HTMLElement =>
+          node instanceof HTMLElement && Boolean(node.dataset?.zhihuItem),
+      );
+      if (!trigger) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const decoded = decodeZhihuItem(trigger.dataset.zhihuItem);
+      if (decoded) setItem(decoded);
+    };
+    document.addEventListener("click", onClick, true);
+    return () => document.removeEventListener("click", onClick, true);
+  }, []);
+
+  useEffect(() => {
+    if (!item) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setItem(null);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [item]);
+
+  if (!item) return null;
+
+  const url = item.url?.trim();
+  const votes = Number(item.vote_up_count ?? 0) || 0;
+  const comments = Number(item.comment_count ?? 0) || 0;
+  const isDimsum = item.source === "dimsum";
+  const categoryLabel = isDimsum
+    ? resolveCategoryNickname(item.category, categoryNicknamesRef.current)
+    : item.author_name?.trim() || "未知";
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      onClick={() => setItem(null)}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        className="flex w-full max-w-lg max-h-[min(85vh,720px)] flex-col rounded-xl border border-border bg-card shadow-lg"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="shrink-0 border-b border-border px-5 pt-5 pb-3">
+          <h2 className="text-lg font-semibold text-foreground leading-snug">
+            {item.title || "(无标题)"}
+          </h2>
+          <p className="mt-2 text-sm text-muted-foreground">
+            {isDimsum ? "分类" : "作者"}：{categoryLabel}
+          </p>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-3">
+          <p className="text-sm text-foreground whitespace-pre-wrap leading-relaxed">
+            {item.summary?.trim() || "暂无摘要"}
+          </p>
+          {item.source !== "dimsum" && (
+            <p className="mt-3 text-sm text-muted-foreground">
+              👍 {votes}　💬 {comments}
+            </p>
+          )}
+        </div>
+        <div className="shrink-0 flex flex-wrap items-center justify-end gap-2 border-t border-border px-5 py-4">
+          <button
+            type="button"
+            onClick={() => setItem(null)}
+            className="rounded-lg border border-border bg-muted/50 px-4 py-2 text-sm text-foreground transition-colors hover:bg-muted"
+          >
+            关闭
+          </button>
+          {url && (
+            <a
+              href={url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+            >
+              打开原文
+            </a>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 「联网搜索」toggle under DeepChat. Owns its own checked state so toggling
+ * does not re-render <DeepChat> (which would reset the conversation).
+ * Syncs into `enabledRef` for the request interceptor to read.
+ */
+function WebSearchToggle({
+  enabledRef,
+}: {
+  enabledRef: MutableRefObject<boolean>;
+}) {
+  const [checked, setChecked] = useState(true);
+
+  useEffect(() => {
+    enabledRef.current = checked;
+  }, [checked, enabledRef]);
+
+  return (
+    <label className="mt-2 flex cursor-pointer items-center gap-2 px-1 text-sm text-muted-foreground select-none">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => setChecked(e.target.checked)}
+        className="h-4 w-4 accent-primary"
+      />
+      <span>🌐 联网搜索</span>
+      <span className="text-xs opacity-70">（勾选后用知乎搜索问题关键词，标题列在回答下方）</span>
+    </label>
   );
 }
 

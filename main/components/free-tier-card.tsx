@@ -43,6 +43,18 @@ export function FreeTierCard({ description, link, chatbotName }: FreeTierCardPro
           {chatbotName} based on Cantonese（粤语）
           <ExternalLink className="h-4 w-4" />
         </a>
+        <br></br>
+        <br></br>
+        <a
+          href="/chat/fo"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors font-medium"
+        >
+          {chatbotName} based on DimSum 佛山语料（粤语）
+          <ExternalLink className="h-4 w-4" />
+        </a>
+
       </div>
     </div>
   );
