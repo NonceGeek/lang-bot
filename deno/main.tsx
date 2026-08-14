@@ -5,6 +5,7 @@ HINT（NOT DELETE):
 - SUPABASE_SERVICE_ROLE_KEY
 - SUPABASE_URL
 - DASHSCOPE_API_KEY（阿里云百炼，chat / embeddings / ASR / TTS）
+- ZHIHU_API_KEY（知乎开放平台 Access Secret，/api/zhihu-search）
  */
 
 import { oakCors } from "cors";
@@ -18,6 +19,7 @@ import { createClient, SupabaseClient } from "npm:@supabase/supabase-js@2";
 //                               alias: ALI_API_KEY
 //   SUPABASE_URL              – Supabase project URL
 //   SUPABASE_SERVICE_ROLE_KEY – Supabase service-role key (bypasses RLS)
+//   ZHIHU_API_KEY       – Zhihu Open Platform Access Secret (Bearer)
 // ---------------------------------------------------------------------------
 
 /** Alibaba DashScope / 百炼 API key (Beijing region by default). */
@@ -46,6 +48,16 @@ const DASHSCOPE_TTS_MODEL =
 const DASHSCOPE_TTS_DEFAULT_VOICE =
   Deno.env.get("DASHSCOPE_TTS_VOICE") || "Kiki";
 const CANTONESE_TTS_VOICES = new Set(["Rocky", "Kiki"]);
+
+/** Zhihu Open Platform Access Secret — https://developer.zhihu.com/personal */
+const ZHIHU_API_KEY = Deno.env.get("ZHIHU_API_KEY") || "";
+/** Base URL for Zhihu Open API (override for proxy / staging). */
+const ZHIHU_OPENAPI_BASE_URL =
+  Deno.env.get("ZHIHU_OPENAPI_BASE_URL") || "https://developer.zhihu.com";
+/** Full endpoint override for zhihu_search. Docs: https://developer.zhihu.com/docs?key=zhihu_search */
+const ZHIHU_SEARCH_URL =
+  Deno.env.get("ZHIHU_ZHIHU_SEARCH_URL") ||
+  `${ZHIHU_OPENAPI_BASE_URL.replace(/\/$/, "")}/api/v1/content/zhihu_search`;
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "";
 const SUPABASE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
@@ -388,6 +400,94 @@ async function synthesizeCantoneseTts(params: {
     audio_url: audioUrl,
     expires_at: data?.output?.audio?.expires_at,
     request_id: data?.request_id,
+  };
+}
+
+type ZhihuSearchItem = {
+  title: string;
+  url: string;
+  author_name: string;
+  summary: string;
+  vote_up_count: number;
+  comment_count: number;
+  edit_time: number;
+};
+
+type ZhihuSearchResult = {
+  query: string;
+  count: number;
+  code: number;
+  message: string;
+  item_count: number;
+  items: ZhihuSearchItem[];
+};
+
+/**
+ * Zhihu on-site search via Open Platform `zhihu_search`.
+ * Docs: https://developer.zhihu.com/docs?key=zhihu_search
+ * Auth: Authorization Bearer + X-Request-Timestamp (unix seconds).
+ */
+async function searchZhihu(params: {
+  query: string;
+  count?: number;
+}): Promise<ZhihuSearchResult> {
+  const secret = ZHIHU_API_KEY.trim();
+  if (!secret) {
+    throw new Error("ZHIHU_API_KEY is not set");
+  }
+
+  const query = params.query.trim();
+  if (!query) throw new Error("'query' is required");
+
+  const count = Math.min(Math.max(params.count ?? 10, 1), 10);
+  const url = new URL(ZHIHU_SEARCH_URL);
+  url.searchParams.set("Query", query);
+  url.searchParams.set("Count", String(count));
+
+  const resp = await fetch(url.toString(), {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${secret}`,
+      "X-Request-Timestamp": String(Math.floor(Date.now() / 1000)),
+      "Content-Type": "application/json",
+    },
+  });
+
+  const text = await resp.text();
+  let data: Record<string, unknown>;
+  try {
+    data = JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    throw new Error(`Zhihu search non-JSON response (${resp.status}): ${text.slice(0, 500)}`);
+  }
+
+  if (!resp.ok) {
+    throw new Error(`Zhihu search HTTP ${resp.status}: ${text.slice(0, 500)}`);
+  }
+
+  const payload = (data.Data && typeof data.Data === "object"
+    ? data.Data
+    : {}) as Record<string, unknown>;
+  const rawItems = Array.isArray(payload.Items) ? payload.Items : [];
+  const items: ZhihuSearchItem[] = rawItems
+    .filter((item): item is Record<string, unknown> => !!item && typeof item === "object")
+    .map((item) => ({
+      title: String(item.Title ?? ""),
+      url: String(item.Url ?? ""),
+      author_name: String(item.AuthorName ?? ""),
+      summary: String(item.ContentText ?? ""),
+      vote_up_count: Number(item.VoteUpCount ?? 0) || 0,
+      comment_count: Number(item.CommentCount ?? 0) || 0,
+      edit_time: Number(item.EditTime ?? 0) || 0,
+    }));
+
+  return {
+    query,
+    count,
+    code: Number(data.Code ?? -1),
+    message: String(data.Message ?? ""),
+    item_count: items.length,
+    items,
   };
 }
 
@@ -880,6 +980,66 @@ router
       };
     } catch (err) {
       console.error("vector_search error:", err);
+      context.response.status = 500;
+      context.response.body = { error: String(err) };
+    }
+  })
+  /*
+    # Zhihu on-site search (requires ZHIHU_API_KEY)
+    # Docs: https://developer.zhihu.com/docs?key=zhihu_search
+    curl "http://localhost:3003/api/zhihu-search?q=粤语&count=5"
+    curl -X POST http://localhost:3003/api/zhihu-search \
+      -H "Content-Type: application/json" \
+      -d '{"q": "粤语文化", "count": 5}'
+  */
+  .get("/api/zhihu-search", async (context) => {
+    // Proxy to Zhihu Open Platform GET /api/v1/content/zhihu_search
+    const params = context.request.url.searchParams;
+    const q = (params.get("q") || params.get("query") || params.get("Query") || "").trim();
+    const countRaw = params.get("count") || params.get("Count") || params.get("topk") || "10";
+    const count = Math.min(Math.max(parseInt(countRaw, 10) || 10, 1), 10);
+
+    if (!q) {
+      context.response.status = 400;
+      context.response.body = { error: "query parameter 'q' (or 'query') is required" };
+      return;
+    }
+    if (!ZHIHU_API_KEY.trim()) {
+      context.response.status = 500;
+      context.response.body = { error: "ZHIHU_API_KEY is not set" };
+      return;
+    }
+
+    try {
+      context.response.body = await searchZhihu({ query: q, count });
+    } catch (err) {
+      console.error("zhihu-search error:", err);
+      context.response.status = 500;
+      context.response.body = { error: String(err) };
+    }
+  })
+  .post("/api/zhihu-search", async (context) => {
+    // Same as GET /api/zhihu-search, JSON body: { q|query, count? }
+    const body = await context.request.body({ type: "json" }).value;
+    const q = String(body.q ?? body.query ?? body.Query ?? "").trim();
+    const countRaw = body.count ?? body.Count ?? body.topk ?? 10;
+    const count = Math.min(Math.max(parseInt(String(countRaw), 10) || 10, 1), 10);
+
+    if (!q) {
+      context.response.status = 400;
+      context.response.body = { error: "'q' (or 'query') is required" };
+      return;
+    }
+    if (!ZHIHU_API_KEY.trim()) {
+      context.response.status = 500;
+      context.response.body = { error: "ZHIHU_API_KEY is not set" };
+      return;
+    }
+
+    try {
+      context.response.body = await searchZhihu({ query: q, count });
+    } catch (err) {
+      console.error("zhihu-search error:", err);
       context.response.status = 500;
       context.response.body = { error: String(err) };
     }

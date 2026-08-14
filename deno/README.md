@@ -32,6 +32,9 @@ export MOVEMENT_PAY_TO="0xYourMovementWalletAddress"
 # Required for chat / embeddings / ASR / TTS (Alibaba DashScope / 百炼)
 export DASHSCOPE_API_KEY="sk-your-key"
 
+# Required for /api/zhihu-search (知乎开放平台 Access Secret)
+export ZHIHU_ACCESS_SECRET="your-zhihu-access-secret"
+
 # Optional server port (default: 4403)
 export SERVER_PORT=4403
 
@@ -71,6 +74,7 @@ Server default URL: `http://localhost:4403`
 | --- | --- | --- |
 | POST | `/api/chat` | Chat without retrieval — same as `/api/search_and_chat` minus search (`q`, `messages`, `system_prompt`) |
 | POST | `/api/tts_cantonese` | Cantonese TTS via DashScope Qwen3-TTS (`text`, optional `voice` / `Kiki`\|`Rocky`) |
+| GET/POST | `/api/zhihu-search` | Zhihu on-site search via Open Platform `zhihu_search` (`q`, optional `count` 1–10) |
 
 Request body:
 
@@ -128,6 +132,12 @@ curl -X POST http://localhost:4403/api/chat \
 curl -X POST http://localhost:4403/api/chat \
   -H "Content-Type: application/json" \
   -d '{"q": "那具体应该怎么做呢", "messages": [{"role": "user", "content": "如何面对焦虑"}, {"role": "assistant", "content": "面对焦虑时，可以尝试……"}]}'
+
+# Zhihu search (requires ZHIHU_ACCESS_SECRET)
+curl "http://localhost:4403/api/zhihu-search?q=粤语&count=5"
+curl -X POST http://localhost:4403/api/zhihu-search \
+  -H "Content-Type: application/json" \
+  -d '{"q": "粤语文化", "count": 5}'
 
 # Premium endpoint (expect 402 without payment)
 curl -i http://localhost:4403/api/premium-content

@@ -1,12 +1,14 @@
 # Lang ChatBot — API Documentation
 
-> Deno backend for LangChatbot: chat, TF-IDF / vector search, RAG, Cantonese ASR & TTS, and certificate helpers (`agent_lib_cert_master`).
+> Deno backend for LangChatbot: chat, TF-IDF / vector search, RAG, Cantonese ASR & TTS, Zhihu search, and certificate helpers (`agent_lib_cert_master`).
 >
 > LLM, embeddings, ASR & TTS via **Alibaba DashScope / 百炼**:
 > - Chat: `qwen3-30b-a3b` → `https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions`
 > - Embeddings: `text-embedding-v4` (1024 dims) → `.../compatible-mode/v1/embeddings`
 > - ASR: `qwen3-asr-flash` → same chat completions path with `input_audio`
 > - TTS: `qwen3-tts-flash` → DashScope multimodal generation API
+>
+> Zhihu on-site search via **[知乎开放平台](https://developer.zhihu.com/docs?key=zhihu_search)** `zhihu_search`.
 
 ## Base URL
 
@@ -266,6 +268,68 @@ Semantic search via Supabase pgvector. Each `lib` maps to RPC `match_lib_<lib>` 
 curl "http://localhost:3003/api/vector_search?q=粤语饮茶&topk=10"
 curl "http://localhost:3003/api/vector_search?q=「掂」系咩意思&lib=dao&topk=10"
 ```
+
+---
+
+### `GET|POST /api/zhihu-search`
+
+知乎站内搜索 — proxy to [知乎开放平台 `zhihu_search`](https://developer.zhihu.com/docs?key=zhihu_search).
+
+Upstream: `GET https://developer.zhihu.com/api/v1/content/zhihu_search`  
+Auth (server-side): `Authorization: Bearer <ZHIHU_ACCESS_SECRET>` + `X-Request-Timestamp` (unix seconds).
+
+Requires `ZHIHU_ACCESS_SECRET`. Returns questions / answers / articles with title, URL, author, summary, votes, comments.
+
+**Query Parameters (GET) / Body fields (POST):**
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `q` / `query` | string | Yes | — | Search keyword |
+| `count` | number | No | `10` | Number of results (1–10; Zhihu API max) |
+
+Aliases: `Query`, `Count`, `topk`.
+
+**Success Response (200):**
+```json
+{
+  "query": "粤语文化",
+  "count": 5,
+  "code": 0,
+  "message": "success",
+  "item_count": 2,
+  "items": [
+    {
+      "title": "粤语文化知多少",
+      "url": "https://zhuanlan.zhihu.com/p/123456789",
+      "author_name": "张三",
+      "summary": "本文介绍了……",
+      "vote_up_count": 128,
+      "comment_count": 15,
+      "edit_time": 1710000000
+    }
+  ]
+}
+```
+
+**Error Responses:**
+
+- `400` — Missing `q` / `query`
+- `500` — Missing `ZHIHU_ACCESS_SECRET`, or Zhihu upstream error
+
+**Examples:**
+```bash
+curl "http://localhost:3003/api/zhihu-search?q=粤语&count=5"
+
+curl -X POST http://localhost:3003/api/zhihu-search \
+  -H "Content-Type: application/json" \
+  -d '{"q": "粤语文化", "count": 5}'
+```
+
+**Notes:**
+
+- Official docs: [zhihu_search](https://developer.zhihu.com/docs?key=zhihu_search)
+- Access Secret: [知乎开放平台个人中心](https://developer.zhihu.com/personal)
+- Optional overrides: `ZHIHU_OPENAPI_BASE_URL`, `ZHIHU_ZHIHU_SEARCH_URL`
 
 ---
 
@@ -596,6 +660,9 @@ The server calls `supabase.rpc("match_lib_" + lib, …)` with embeddings from Da
 | `DASHSCOPE_TTS_MODEL` | No | `qwen3-tts-flash` | TTS model for `/api/tts_cantonese` |
 | `DASHSCOPE_TTS_VOICE` | No | `Kiki` | Default Cantonese voice (`Kiki` or `Rocky`) |
 | `DASHSCOPE_TTS_URL` | No | Beijing multimodal generation URL | Override DashScope TTS HTTP endpoint |
+| `ZHIHU_ACCESS_SECRET` | For `/api/zhihu-search` | — | Zhihu Open Platform Access Secret (Bearer) |
+| `ZHIHU_OPENAPI_BASE_URL` | No | `https://developer.zhihu.com` | Zhihu Open API base URL |
+| `ZHIHU_ZHIHU_SEARCH_URL` | No | `${BASE}/api/v1/content/zhihu_search` | Full endpoint override for zhihu_search |
 | `SUPABASE_URL` | No | — | Required for vector search & certificates |
 | `SUPABASE_SERVICE_ROLE_KEY` | No | — | Required for vector search & certificates |
 | `PASSWD` | No | — | Shared secret for `POST /api/new_cert` |
