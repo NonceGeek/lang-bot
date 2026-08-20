@@ -163,9 +163,12 @@ export function formatCorpusItemText(item: CorpusItem): string {
   return lines.join("\n");
 }
 
-/** Primary text to pre-fill chat input from a corpus item */
+/** Primary text to pre-fill chat input from a corpus item (ready to send). */
 export function corpusItemToInputText(item: CorpusItem): string {
-  return item.data?.trim() || formatCorpusItemText(item);
+  const title = item.data?.trim() ?? "";
+  const details = formatCorpusItemText(item);
+  if (title && details) return `${title}\n\n${details}`;
+  return title || details;
 }
 
 export function formatCorpusContext(items: CorpusItem[]): string {

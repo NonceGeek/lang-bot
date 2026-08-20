@@ -380,8 +380,8 @@ function getSelectionInfo(chatEl: HTMLElement | null): SelectionInfo | null {
   return collect(shadow?.getSelection?.());
 }
 
-/** pending = fetching corpus; string = prefill text; null = no uuid prefill */
-type UuidInputPrefill = "pending" | string | null;
+/** pending = fetching corpus; CorpusItem = loaded; null = no uuid */
+type UuidCorpusState = "pending" | CorpusItem | null;
 
 export function ChatClient({
   homepageName,
@@ -405,12 +405,17 @@ export function ChatClient({
   const historyRef = useRef<HistoryMessage[]>([]);
   const lastQuestionRef = useRef<string>("");
   const aidimsumCorpusRef = useRef<CorpusItem[]>([]);
+  /** ?uuid= corpus — also appended to LLM `q` when present */
+  const uuidCorpusRef = useRef<CorpusItem | null>(null);
   /** Read by requestInterceptor — updated by WebSearchToggle without re-rendering DeepChat */
   const webSearchEnabledRef = useRef(true);
   const zhihuItemsRef = useRef<ZhihuSearchItem[]>([]);
   const categoryNicknamesRef = useRef<Map<string, string>>(new Map());
   const categoriesReadyRef = useRef<Promise<void> | null>(null);
-  const [uuidInputPrefill, setUuidInputPrefill] = useState<UuidInputPrefill>(() =>
+  const [categoryNicknames, setCategoryNicknames] = useState<Map<string, string>>(
+    () => new Map(),
+  );
+  const [uuidCorpus, setUuidCorpus] = useState<UuidCorpusState>(() =>
     getUrlUuid() ? "pending" : null,
   );
   const [initialHistory, setInitialHistory] = useState<
@@ -426,23 +431,29 @@ export function ChatClient({
     categoriesReadyRef.current = fetchCorpusCategories(additionalSourceUrl)
       .then((categories) => {
         if (cancelled) return;
-        categoryNicknamesRef.current = buildCategoryNicknameMap(categories);
+        const map = buildCategoryNicknameMap(categories);
+        categoryNicknamesRef.current = map;
+        setCategoryNicknames(map);
       })
       .catch(() => {
-        if (!cancelled) categoryNicknamesRef.current = new Map();
+        if (!cancelled) {
+          categoryNicknamesRef.current = new Map();
+          setCategoryNicknames(new Map());
+        }
       });
     return () => {
       cancelled = true;
     };
   }, [additionalSourceUrl]);
 
-  // ?uuid=… → fetch /v2/corpus_item, then mount DeepChat with defaultInput
+  // ?uuid=… → GET /v2/corpus_item → show under input as「引用语料」JSON box
   useEffect(() => {
-    if (uuidInputPrefill !== "pending") return;
+    if (uuidCorpus !== "pending") return;
 
     const uuid = getUrlUuid();
     if (!uuid || !additionalSourceUrl) {
-      setUuidInputPrefill(null);
+      uuidCorpusRef.current = null;
+      setUuidCorpus(null);
       return;
     }
 
@@ -450,16 +461,20 @@ export function ChatClient({
     fetchCorpusItem(additionalSourceUrl, { unique_id: uuid })
       .then((item) => {
         if (cancelled) return;
-        setUuidInputPrefill(item ? JSON.stringify(item, null, 2) : null);
+        uuidCorpusRef.current = item;
+        setUuidCorpus(item);
       })
       .catch(() => {
-        if (!cancelled) setUuidInputPrefill(null);
+        if (!cancelled) {
+          uuidCorpusRef.current = null;
+          setUuidCorpus(null);
+        }
       });
 
     return () => {
       cancelled = true;
     };
-  }, [uuidInputPrefill, additionalSourceUrl]);
+  }, [uuidCorpus, additionalSourceUrl]);
 
   // Load chat history from localStorage on mount, including citations for assistant messages
   useEffect(() => {
@@ -538,6 +553,12 @@ export function ChatClient({
 
         let questionForApi = currentQuestion;
 
+        // ?uuid= 引用语料 — always attach when present
+        const uuidItem = uuidCorpusRef.current;
+        if (uuidItem) {
+          questionForApi = `${questionForApi}\n\n--- 引用语料 ---\n${JSON.stringify(uuidItem, null, 2)}`;
+        }
+
         if (additionalSourceUrl && currentQuestion.trim()) {
           const dimsumKeyword =
             extractDimsumKeyword(currentQuestion) || currentQuestion.trim();
@@ -548,7 +569,7 @@ export function ChatClient({
           );
           aidimsumCorpusRef.current = corpusItems;
           if (corpusItems.length > 0) {
-            questionForApi = `${currentQuestion}\n\n--- AI Dimsum 语料参考 ---\n${formatCorpusContext(corpusItems)}`;
+            questionForApi = `${questionForApi}\n\n--- AI Dimsum 语料参考 ---\n${formatCorpusContext(corpusItems)}`;
           }
         }
 
@@ -694,7 +715,7 @@ export function ChatClient({
           </div>
           {/* <p className="text-muted-foreground">{chatbotDescription}</p> */}
           <div className="rounded-xl border border-border bg-card p-3 shadow-sm [&>deep-chat]:!w-full [&>deep-chat]:!block">
-            {uuidInputPrefill === "pending" ? (
+            {uuidCorpus === "pending" ? (
               <div
                 className="flex items-center justify-center text-sm text-muted-foreground"
                 style={{ borderRadius: "12px", height: "550px" }}
@@ -706,13 +727,11 @@ export function ChatClient({
                 style={{ borderRadius: "12px", height: "550px" }}
                 introMessage={{ text: chatbotIntroMessage }}
                 history={initialHistory}
-                defaultInput={
-                  typeof uuidInputPrefill === "string"
-                    ? { text: uuidInputPrefill }
-                    : undefined
-                }
                 onComponentRender={handleChatRender}
               />
+            )}
+            {uuidCorpus && uuidCorpus !== "pending" && (
+              <CitedCorpusBox item={uuidCorpus} categoryNicknames={categoryNicknames} />
             )}
             {zhihuSearchApiUrl && (
               <WebSearchToggle enabledRef={webSearchEnabledRef} />
@@ -756,6 +775,66 @@ export function ChatClient({
       {(zhihuSearchApiUrl || additionalSourceUrl) && (
         <WebSearchItemModal categoryNicknamesRef={categoryNicknamesRef} />
       )}
+    </div>
+  );
+}
+
+/**
+ * 「引用语料」box under DeepChat input.
+ * Fixed fields (data / category / tags) use Chinese labels; note.context keys stay as-is.
+ */
+function CitedCorpusBox({
+  item,
+  categoryNicknames,
+}: {
+  item: CorpusItem;
+  categoryNicknames: Map<string, string>;
+}) {
+  const data = item.data?.trim() || "—";
+  const category = item.category?.trim()
+    ? resolveCategoryNickname(item.category, categoryNicknames)
+    : "—";
+  const tags = item.tags?.filter((t) => t?.trim()) ?? [];
+  const contextEntries = Object.entries(item.note?.context ?? {}).filter(
+    ([, value]) => value != null && String(value).trim() !== "",
+  );
+
+  return (
+    <div className="mt-3 rounded-lg border border-border bg-muted/30 p-3">
+      <div className="mb-2 text-sm font-semibold text-foreground">引用语料</div>
+      <div className="max-h-64 overflow-auto space-y-2 rounded-md bg-background/80 p-3 text-sm leading-relaxed">
+        <div>
+          <span className="text-muted-foreground">摘要：</span>
+          <span className="text-foreground">{data}</span>
+        </div>
+        <div>
+          <span className="text-muted-foreground">分类：</span>
+          <span className="text-foreground">{category}</span>
+        </div>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-muted-foreground shrink-0">标签：</span>
+          {tags.length ? (
+            tags.map((tag) => (
+              <span
+                key={tag}
+                className="rounded-full border border-border bg-muted/50 px-2 py-0.5 text-xs text-foreground"
+              >
+                {tag}
+              </span>
+            ))
+          ) : (
+            <span className="text-foreground">—</span>
+          )}
+        </div>
+        {contextEntries.map(([key, value]) => (
+          <div key={key}>
+            <span className="text-muted-foreground">{key}：</span>
+            <span className="text-foreground whitespace-pre-wrap break-words">
+              {String(value)}
+            </span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
