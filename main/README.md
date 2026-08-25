@@ -10,11 +10,11 @@ A configurable Next.js scaffold for building AI Agent homepages with a built-in 
 
 * **homepageName**
   * **description:** Display name shown in the header, footer, and page title
-  * **value:** `"LangChatbot"`
+  * **value:** `"DimSumChatbot"`
 
 * **fullName**
   * **description:** Full agent name shown on the profile card
-  * **value:** `"多语种智能助理 LangChatbot"`
+  * **value:** `"多语种智能助理 DimSumChatbot"`
 
 * **twitterUrl**
   * **description:** Twitter/X profile URL shown in the footer
@@ -26,11 +26,11 @@ A configurable Next.js scaffold for building AI Agent homepages with a built-in 
 
 * **descriptionMarkdown**
   * **description:** Agent description in markdown (supports bold, links, newlines)
-  * **value:** `"A multilingual smart assistant — LangChatbot helps you chat across languages and easily experience cultures from around the world.\n多语种智能助理 LangChatbot，支持多种语言对话，助你轻松体验多国文化。"`
+  * **value:** `"A multilingual smart assistant — DimSumChatbot helps you chat across languages and easily experience cultures from around the world.\n多语种智能助理 DimSumChatbot，支持多种语言对话，助你轻松体验多国文化。"`
 
 * **freeTierDescription**
   * **description:** Description text for the free tier card
-  * **value:** `"Chat with the LangBot for free. \n与 LangBot 免费聊天！"`
+  * **value:** `"Chat with the DimSumChatbot for free. \n与 DimSumChatbot 免费聊天！"`
 
 * **freeTierLink**
   * **description:** Link target for the free tier button

@@ -1,6 +1,6 @@
-# Lang ChatBot — API Documentation
+# DimSumChatbot — API Documentation
 
-> Deno backend for LangChatbot: chat, TF-IDF / vector search, RAG, Cantonese ASR & TTS, Zhihu search, and certificate helpers (`agent_lib_cert_master`).
+> Deno backend for DimSumChatbot: chat, TF-IDF / vector search, RAG, Cantonese ASR & TTS, Zhihu search, and certificate helpers (`agent_lib_cert_master`).
 >
 > LLM, embeddings, ASR & TTS via **Alibaba DashScope / 百炼**:
 > - Chat: `qwen3-30b-a3b` → `https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions`
@@ -24,7 +24,7 @@ http://localhost:3003
 
 Server greeting.
 
-**Response:** Plain text, e.g. `Hello from Lang ChatBot Server`.
+**Response:** Plain text, e.g. `Hello from DimSumChatbot Server`.
 
 ---
 

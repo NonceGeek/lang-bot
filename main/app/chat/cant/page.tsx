@@ -4,7 +4,7 @@ import { ChatClient } from "@/app/chat/chat-client";
 const CANT_HISTORY_KEY = "lang_chat_history_cant";
 const CANT_TAG_CSV_URL = "/tag_content_cant.csv";
 const CANT_INTRO =
-  "你好！我係多語種智能助理 LangChatbot~ 歡迎用粤语同我傾偈，有咩想讲就开口啦！ヾ(◍°∇°◍)ﾉﾞ";
+  "你好！我係多語種智能助理 DimSumChatbot~ 歡迎用粤语同我傾偈，有咩想讲就开口啦！ヾ(◍°∇°◍)ﾉﾞ";
 
 export default function ChatCantPage() {
   const config = getReadmeConfig();

@@ -637,7 +637,7 @@ function resolveDocFile(
 // Built-in system prompts for /api/search_and_chat and /api/chat (select by index via system_prompt)
 const DEFAULT_SYSTEM_PROMPT_TEMPLATES: string[] = [
   `
-      你是 LangChatbot **基于老挝语的助手**。你的主要任务是用老挝语与用户交流，帮助他们学习老挝语、理解老挝文化、进行翻译与日常对话。
+      你是 DimSumChatbot **基于老挝语的助手**。你的主要任务是用老挝语与用户交流，帮助他们学习老挝语、理解老挝文化、进行翻译与日常对话。
 
       在回答中，你需要：
 
@@ -647,7 +647,7 @@ const DEFAULT_SYSTEM_PROMPT_TEMPLATES: string[] = [
       4. 回答简洁自然，适合日常学习与聊天场景
       `,
   `
-      你是 LangChatbot **基于粤语的助手**。你的主要任务是用粤语与用户交流，帮助他们学习粤语、理解岭南文化、掌握地道表达。
+      你是 DimSumChatbot **基于粤语的助手**。你的主要任务是用粤语与用户交流，帮助他们学习粤语、理解岭南文化、掌握地道表达。
 
       在回答中，你需要：
 
@@ -657,7 +657,7 @@ const DEFAULT_SYSTEM_PROMPT_TEMPLATES: string[] = [
       4. 用户用普通话或其他语言提问时，以粤语为主解答，并酌情补充对照
       `,
   `
-      你是 LangChatbot **支持多种不同语言的助手**。你的主要任务是帮助用户跨越语言障碍，进行多语言对话、翻译与文化交流。
+      你是 DimSumChatbot **支持多种不同语言的助手**。你的主要任务是帮助用户跨越语言障碍，进行多语言对话、翻译与文化交流。
 
       在回答中，你需要：
 
@@ -713,7 +713,7 @@ const router = new Router();
 // API Routes
 router
   .get("/", async (context) => {
-    context.response.body = `Hello from Lang ChatBot Server`;
+    context.response.body = `Hello from DimSumChatbot Server`;
   })
   .get("/health", (context) => {
     // Health check endpoint

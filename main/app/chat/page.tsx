@@ -2,7 +2,7 @@ import { getReadmeConfig } from "@/lib/readme-config";
 import { ChatClient } from "@/app/chat/chat-client";
 
 const LAO_INTRO =
-  "ສະບາຍດີ! ຂ້ອຍແມ່ນ LangChatbot ຜູ້ຊ່ວຍເຫຼືອຫຼາຍພາສາ~ ມີຄຳຖາມຫຍັງກໍຖາມໄດ້ເລີຍ! ❤️";
+  "ສະບາຍດີ! ຂ້ອຍແມ່ນ DimSumChatbot ຜູ້ຊ່ວຍເຫຼືອຫຼາຍພາສາ~ ມີຄຳຖາມຫຍັງກໍຖາມໄດ້ເລີຍ! ❤️";
 
 /** Built-in system_prompt template [0] — Lao language assistant (deno/apidoc.md) */
 const DEF_PROMPT_0 = 0;

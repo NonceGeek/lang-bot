@@ -4,7 +4,7 @@ import { ChatClient } from "@/app/chat/chat-client";
 const FO_HISTORY_KEY = "lang_chat_history_fo";
 const FO_TAG_CSV_URL = "/tag_content_fo.csv";
 const FO_INTRO =
-  "你好！我係 LangChatbot，專門陪你傾偈佛山嘅事~ 有咩想问就开口啦！ヾ(◍°∇°◍)ﾉﾞ";
+  "你好！我係 DimSumChatbot，專門陪你傾偈佛山嘅事~ 有咩想问就开口啦！ヾ(◍°∇°◍)ﾉﾞ";
 
 export default function ChatFoPage() {
   const config = getReadmeConfig();
