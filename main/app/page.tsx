@@ -1,6 +1,7 @@
 import { Header } from "@/components/header";
 import { AgentProfileCard } from "@/components/agent-profile-card";
 import { FreeTierCard } from "@/components/free-tier-card";
+import { YueTalkCard } from "@/components/yue-talk-card";
 import { PremiumTierCard } from "@/components/premium-tier-card";
 import { getReadmeConfig } from "@/lib/readme-config";
 
@@ -51,6 +52,8 @@ export default function Home() {
           description={config.descriptionMarkdown}
           tags={config.agentTags}
         />
+        <br></br>
+        <YueTalkCard />
         <br></br>
         {/* Free Tier: ChatBot Access */}
         <FreeTierCard
