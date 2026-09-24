@@ -144,7 +144,7 @@ const COPY: Record<
       shy: "害羞",
       sad: "唔開心",
       angry: "嬲",
-      surprised: "嚇親",
+      surprised: "驚訝",
       thinking: "諗嘢",
       sleepy: "眼瞓",
     },
