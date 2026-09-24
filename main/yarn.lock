@@ -921,6 +921,11 @@ minizlib@^3.1.0:
   dependencies:
     minipass "^7.1.2"
 
+mochi-avatar@^1.1.0:
+  version "1.1.0"
+  resolved "https://registry.npmjs.org/mochi-avatar/-/mochi-avatar-1.1.0.tgz#685bebeb87efabc3d964187826bee93afb7b2978"
+  integrity sha512-giK4ufKNRpxDwjUdxDwifnBA0UxiStL3fqAQf6RMEokY2iEZiNOgvKlKgJX2OgQQFE3QsADh4w6NBC6ufT9Zcw==
+
 nanoid@^3.3.11, nanoid@^3.3.6:
   version "3.3.11"
   resolved "https://registry.npmjs.org/nanoid/-/nanoid-3.3.11.tgz"
